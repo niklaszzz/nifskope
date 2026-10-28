@@ -103,21 +103,8 @@ SpellBook::~SpellBook()
 
 void SpellBook::cast( NifModel * nif, const QModelIndex & index, SpellPtr spell )
 {
-	QSettings cfg;
-
-	bool suppressConfirm = cfg.value( "Settings/Suppress Undoable Confirmation", false ).toBool();
-	bool accepted = false;
-
-	QDialogButtonBox::StandardButton response = QDialogButtonBox::Yes;
-
-	if ( !suppressConfirm && spell->page() != "Array" ) {
-		response = CheckableMessageBox::question( this, "Confirmation", "This action cannot currently be undone. Do you want to continue?", "Do not ask me again", &accepted );
-
-		if ( accepted )
-			cfg.setValue( "Settings/Suppress Undoable Confirmation", true );
-	}
-	
-	if ( (response == QDialogButtonBox::Yes) && spell && spell->isApplicable( nif, index ) ) {
+	if ( spell && spell->isApplicable( nif, index ) ) {
+		nif->beginUndoTransaction( spell->name() );
 		bool noSignals = spell->batch();
 		if ( noSignals )
 			nif->setState( BaseModel::Processing );
@@ -134,6 +121,7 @@ void SpellBook::cast( NifModel * nif, const QModelIndex & index, SpellPtr spell 
 			emit nif->dataChanged( idx, idx );
 		}
 
+		nif->endUndoTransaction();
 		emit sigIndex( idx );
 	}
 }

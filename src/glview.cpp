@@ -100,6 +100,7 @@ GLGraphicsView::GLGraphicsView( QWidget * parent ) : QGraphicsView()
 {
 	setContextMenuPolicy( Qt::CustomContextMenu );
 	setFocusPolicy( Qt::ClickFocus );
+	setMouseTracking( true );
 	setAcceptDrops( true );
 	
 	installEventFilter( parent );
@@ -152,6 +153,7 @@ GLView::GLView( const QGLFormat & format, QWidget * p, const QGLWidget * shareWi
 	: QGLWidget( format, p, shareWidget )
 {
 	setFocusPolicy( Qt::ClickFocus );
+	setMouseTracking( true );
 	//setAttribute( Qt::WA_PaintOnScreen );
 	//setAttribute( Qt::WA_NoSystemBackground );
 	setAutoFillBackground( false );
@@ -618,6 +620,8 @@ void GLView::paintGL()
 
 	// Draw the model
 	scene->draw();
+	drawEditorOverlay();
+	drawGizmo();
 
 	if ( scene->options & Scene::ShowAxes ) {
 		// Resize viewport to small corner of screen
@@ -851,6 +855,12 @@ int indexAt( /*GLuint *buffer,*/ NifModel * model, Scene * scene, QList<DrawFunc
 
 QModelIndex GLView::indexAt( const QPoint & pos, int cycle )
 {
+	if ( scene->selMode == Scene::SelObject ) {
+		auto light = lightAt( pos );
+		if ( light.isValid() ) return light;
+		auto collision = collisionAt(pos);
+		if(collision.isValid())return collision;
+	}
 	if ( !(model && isVisible() && height()) )
 		return QModelIndex();
 
@@ -1108,20 +1118,38 @@ void GLView::flush()
 
 void GLView::setNif( NifModel * nif )
 {
+	finishGizmo( true );
+	gizmoVisible = false;
 	if ( model ) {
 		// disconnect( model ) may not work with new Qt5 syntax...
 		// it says the calls need to remain symmetric to the connect() ones.
 		// Otherwise, use QMetaObject::Connection
-		disconnect( model );
+		QObject::disconnect( model, nullptr, this, nullptr );
 	}
 
 	model = nif;
+	editMesh = QModelIndex();
+	selectedVertices.clear();
+	vertexProjectionValid = false;
+	lightMarkers.clear();
+	physxMeshes.clear();physxDirty=true;
 
 	if ( model ) {
 		connect( model, &NifModel::dataChanged, this, &GLView::dataChanged );
 		connect( model, &NifModel::linksChanged, this, &GLView::modelLinked );
 		connect( model, &NifModel::modelReset, this, &GLView::modelChanged );
 		connect( model, &NifModel::destroyed, this, &GLView::modelDestroyed );
+		connect( model, &NifModel::undoAboutToRestore, this, [this]() {
+			editRestoreBlock = model->getBlockNumber( editMesh );
+		} );
+		connect( model, &NifModel::undoRestored, this, [this]() {
+			if ( scene->selMode == Scene::SelVertex && editRestoreBlock >= 0 ) {
+				editMesh = model->getBlock( editRestoreBlock );
+				refreshEditData();
+				setCurrentIndex(editMesh);
+			}
+			vertexProjectionValid = false;
+		} );
 	}
 
 	doCompile = true;
@@ -1129,6 +1157,10 @@ void GLView::setNif( NifModel * nif )
 
 void GLView::setCurrentIndex( const QModelIndex & index )
 {
+	if ( scene->selMode == Scene::SelVertex && editMesh.isValid() && model
+		 && index.isValid() && model->getBlock(index) != editMesh ) return;
+	if ( gizmoAxis >= 0 && model && model->getBlock( index ) != gizmoBlock )
+		finishGizmo( true );
 	if ( !( model && index.model() == model ) )
 		return;
 
@@ -1161,6 +1193,7 @@ QModelIndex parent( QModelIndex ix, QModelIndex xi )
 
 void GLView::dataChanged( const QModelIndex & idx, const QModelIndex & xdi )
 {
+	physxDirty=true;
 	if ( doCompile )
 		return;
 
@@ -1183,6 +1216,7 @@ void GLView::dataChanged( const QModelIndex & idx, const QModelIndex & xdi )
 
 void GLView::modelChanged()
 {
+	physxDirty=true;
 	if ( doCompile )
 		return;
 
@@ -1193,6 +1227,7 @@ void GLView::modelChanged()
 
 void GLView::modelLinked()
 {
+	physxDirty=true;
 	if ( doCompile )
 		return;
 
@@ -1202,6 +1237,7 @@ void GLView::modelLinked()
 
 void GLView::modelDestroyed()
 {
+	gizmoAxis = -1;
 	setNif( nullptr );
 }
 
@@ -1635,11 +1671,25 @@ void GLView::dropEvent( QDropEvent * e )
 
 void GLView::focusOutEvent( QFocusEvent * )
 {
+	finishGizmo( true );
+	vertexSelecting = false;
 	kbd.clear();
 }
 
 void GLView::keyPressEvent( QKeyEvent * event )
 {
+	if ( gizmoAxis >= 0 && event->key() == Qt::Key_Escape ) {
+		finishGizmo( true );
+		return;
+	}
+	if ( gizmoAxis >= 0 ) return;
+	if ( scene->selMode == Scene::SelVertex ) {
+		if ( event->key() == Qt::Key_Escape && vertexSelecting ) { vertexSelecting=false; update(); return; }
+		if ( event->matches(QKeySequence::SelectAll) && refreshEditData() ) {
+			for(int i=0;i<editData.positions.size();++i) selectedVertices.insert(i);
+			update(); return;
+		}
+	}
 	switch ( event->key() ) {
 	case Qt::Key_Up:
 	case Qt::Key_Down:
@@ -1710,6 +1760,16 @@ void GLView::mouseDoubleClickEvent( QMouseEvent * )
 
 void GLView::mouseMoveEvent( QMouseEvent * event )
 {
+	if ( gizmoAxis >= 0 ) {
+		dragGizmo( event->pos() );
+		return;
+	}
+	if ( vertexSelecting ) { vertexSelectionEnd=event->pos(); update(); return; }
+	if ( event->buttons() == Qt::NoButton ) {
+		if ( pickGizmo( event->pos() ) >= 0 ) setCursor( Qt::OpenHandCursor );
+		else if(scene->selMode==Scene::SelObject && lightAt(event->pos()).isValid()) setCursor(Qt::PointingHandCursor);
+		else unsetCursor();
+	}
 	int dx = event->x() - lastPos.x();
 	int dy = event->y() - lastPos.y();
 
@@ -1727,6 +1787,18 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 
 void GLView::mousePressEvent( QMouseEvent * event )
 {
+	if ( gizmoAxis < 0 && event->button() == Qt::LeftButton )
+		gizmoReleasePending = false;
+	if ( event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier
+		 && !kbd[Qt::Key_Space] && beginGizmo( event->pos() ) )
+		return;
+	if ( scene->selMode == Scene::SelVertex && event->button() == Qt::LeftButton
+		 && !kbd[Qt::Key_Space] && !(event->modifiers() & Qt::AltModifier) ) {
+		vertexSelecting = true;
+		vertexSelectionStart = vertexSelectionEnd = event->pos();
+		vertexSelectionModifiers = event->modifiers();
+		return;
+	}
 	if ( event->button() == Qt::ForwardButton || event->button() == Qt::BackButton ) {
 		event->ignore();
 		return;
@@ -1744,6 +1816,24 @@ void GLView::mousePressEvent( QMouseEvent * event )
 
 void GLView::mouseReleaseEvent( QMouseEvent * event )
 {
+	if ( vertexSelecting && event->button() == Qt::LeftButton ) {
+		vertexSelecting=false;
+		selectEditVertices(event->pos());
+		update(); return;
+	}
+	if ( gizmoAxis >= 0 ) {
+		if ( event->button() == Qt::LeftButton ) {
+			dragGizmo( event->pos() );
+			finishGizmo();
+			gizmoReleasePending = false;
+		}
+		return;
+	}
+	if ( gizmoReleasePending && event->button() == Qt::LeftButton ) {
+		gizmoReleasePending = false;
+		return;
+	}
+	if(scene->selMode==Scene::SelVertex && !(event->modifiers() & Qt::AltModifier)) return;
 	if ( !(model && (pressPos - event->pos()).manhattanLength() <= 3) )
 		return;
 
@@ -1795,6 +1885,7 @@ void GLView::mouseReleaseEvent( QMouseEvent * event )
 
 void GLView::wheelEvent( QWheelEvent * event )
 {
+	if ( gizmoAxis >= 0 ) return;
 	if ( view == ViewWalk )
 		mouseMov += Vector3( 0, 0, event->delta() );
 	else

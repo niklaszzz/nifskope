@@ -34,6 +34,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define GLVIEW
 
 #include "gl/glscene.h"
+#include "model/vertexedit.h"
+#include "physx/physxcollision.h"
 
 #include <QGLWidget> // Inherited
 #include <QGraphicsView>
@@ -62,6 +64,9 @@ class GLView final : public QGLWidget
 
 	friend class NifSkope;
 	friend class GLGraphicsView;
+	friend class GLViewGizmoTest;
+	friend class VertexEditorTest;
+	friend class PhysXCollisionTest;
 
 private:
 	GLView( const QGLFormat & format, QWidget * parent, const QGLWidget * shareWidget = 0 );
@@ -144,6 +149,11 @@ public:
 	void flipOrientation();
 
 	void setDebugMode( DebugMode );
+
+	enum GizmoMode { GizmoSelect, GizmoMove, GizmoRotate, GizmoScale };
+	void setGizmoMode( GizmoMode mode );
+	void setEditSelectionMode( Scene::SelMode mode );
+	void setVertexSnap( bool enabled ) { vertexSnap=enabled; update(); }
 
 	QColor clearColor() const;
 
@@ -235,6 +245,60 @@ private:
 	GLdouble axis;
 	GLdouble grid;
 	Transform viewTrans;
+
+	GizmoMode gizmoMode = GizmoSelect;
+	int gizmoAxis = -1;
+	bool gizmoVisible = false;
+	bool gizmoReleasePending = false;
+	QPersistentModelIndex gizmoBlock;
+	Transform gizmoStart, gizmoParent;
+	Vector3 gizmoOrigin, gizmoDirections[3];
+	float gizmoLength = 1;
+	float gizmoDragLength = 1;
+	Vector3 gizmoDragOrigin, gizmoDragAxes[3];
+	GLdouble gizmoDragModelview[16], gizmoDragProjection[16];
+	GLint gizmoDragViewport[4];
+	double gizmoAngle = 0, gizmoLastAngle = 0;
+	bool gizmoPlaneRotation = false;
+	bool gizmoPlaneAngle( const QPoint & point, double & angle ) const;
+	QPointF gizmoScreenOrigin, gizmoScreenAxes[3];
+	QVector<QPointF> gizmoRings[3];
+	QPointF gizmoDragDirection;
+	QPoint gizmoPress;
+	GLdouble gizmoModelview[16], gizmoProjection[16];
+	GLint gizmoViewport[4];
+	void drawGizmo();
+	bool projectGizmo( const Vector3 & point, QPointF & screen ) const;
+	int pickGizmo( const QPoint & point ) const;
+	bool beginGizmo( const QPoint & point );
+	void dragGizmo( const QPoint & point );
+	void finishGizmo( bool cancel = false );
+	QPersistentModelIndex editMesh;
+	VertexEditData editData;
+	QSet<int> selectedVertices, vertexDragSelection;
+	QVector<Vector3> vertexDragPositions;
+	bool vertexGizmo = false;
+	bool vertexSnap = false;
+	bool vertexSelecting = false;
+	bool vertexProjectionValid = false;
+	QPoint vertexSelectionStart, vertexSelectionEnd;
+	Qt::KeyboardModifiers vertexSelectionModifiers;
+	QString vertexEditReason;
+	int editRestoreBlock = -1;
+	QVector<Vector3> snapTargets;
+	int snapTarget = -1;
+	Vector3 snapAnchor;
+	QVector<QPair<QPersistentModelIndex,QPointF>> lightMarkers;
+	QVector<PhysXCollision::Mesh> physxMeshes;
+	bool physxDirty = true;
+	QModelIndex collisionAt(const QPoint & point) const;
+	void drawEditorOverlay();
+	void selectEditVertices( const QPoint & end );
+	void buildSnapTargets();
+	bool editSelectionPivot( Vector3 & pivot ) const;
+	bool refreshEditData();
+	bool writeVertexTransform( const Transform & transform );
+	QModelIndex lightAt( const QPoint & point ) const;
 
 	GLdouble aspect;
 	

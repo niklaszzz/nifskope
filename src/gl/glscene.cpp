@@ -214,6 +214,17 @@ void Scene::make( NifModel * nif, bool flushTextures )
 		return;
 
 	update( nif, QModelIndex() );
+	// Effects can reference lights outside a node's Children array. Give those
+	// lights scene nodes too, so Show Nodes can display and pick their markers.
+	for(int b=0;b<nif->getBlockCount();++b) {
+		auto block=nif->getBlock(b);
+		if(!nif->inherits(block,"NiLight") || nodes.get(block)) continue;
+		auto light=getNode(nif,block);
+		if(!light) continue;
+		auto parent=nodes.get(nif->getBlock(nif->getParent(b)));
+		if(parent && parent!=light && nif->inherits(parent->index(),"NiNode")) light->makeParent(parent);
+		else roots.add(light);
+	}
 
 	if ( !animGroups.contains( animGroup ) ) {
 		if ( animGroups.isEmpty() )
@@ -261,7 +272,7 @@ Node * Scene::getNode( const NifModel * nif, const QModelIndex & iNode )
 		node = new BSShape( this, iNode );
 		shapes += static_cast<Shape *>(node);
 	} else if ( nif->inherits( iNode, "NiAVObject" ) ) {
-		if ( nif->itemName( iNode ) == "BSTreeNode" )
+		if ( nif->itemName( iNode ) == "BSTreeNode" || nif->inherits( iNode, "NiLight" ) )
 			node = new Node( this, iNode );
 	}
 

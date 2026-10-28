@@ -59,6 +59,7 @@ class QUndoStack;
 class UVWidget final : public QGLWidget
 {
 	Q_OBJECT
+	friend class UVEditorTest;
 
 protected:
 	UVWidget( QWidget * parent = nullptr );
@@ -99,6 +100,7 @@ protected:
 	void mouseReleaseEvent( QMouseEvent * e ) override final;
 	void mouseMoveEvent( QMouseEvent * e ) override final;
 	void wheelEvent( QWheelEvent * e ) override final;
+	void focusOutEvent(QFocusEvent * event) override;
 
 	void keyPressEvent( QKeyEvent * ) override final;
 	void keyReleaseEvent( QKeyEvent * ) override final;
@@ -124,6 +126,7 @@ public slots:
 	void scaleSelection();
 	//! Rotate the selection
 	void rotateSelection();
+	void frameUVs();
 
 	void updateSettings();
 
@@ -188,7 +191,10 @@ private:
 
 	void updateNif();
 
-	NifModel * nif;
+	NifModel * nif = nullptr;
+	bool uvDragging = false, restoringUndo = false;
+	int restoreShape = -1, restoreBlockCount = 0;
+	QAction * documentUndo = nullptr, * documentRedo = nullptr;
 	QPersistentModelIndex iShape, iShapeData, iTexCoords, iTex, iPartBlock;
 
 	//! If mesh is skinned, different behavior is required for stream version 100

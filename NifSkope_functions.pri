@@ -257,10 +257,9 @@ defineTest(copyDirs) {
 
 		dirabs = $$syspath($${dirabs})
 
-		# Fix copy for subdir on unix, also assure clean subdirs (no extra files)
+		# Unix cp needs a clean destination to avoid nesting directories.
+		# Windows xcopy merges into the destination without deleting it first.
 		!isEmpty(subdir) {
-			win32:*msvc*:QMAKE_POST_LINK += rd /s /q $${ddir} $$nt
-			else:!unix:QMAKE_POST_LINK += rm -rf $${ddir} $$nt
 			unix:QMAKE_POST_LINK += rm -rf $${ddir} $$nt
 		}
 

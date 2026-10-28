@@ -45,6 +45,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class SpellBook;
 class QUndoStack;
+class QUndoCommand;
+struct NifUndoState;
+class NifSnapshotCommand;
 
 using NifBlockPtr = std::shared_ptr<NifBlock>;
 using SpellBookPtr = std::shared_ptr<SpellBook>;
@@ -297,16 +300,37 @@ public:
 
 	//! Undo Stack for changes to NifModel
 	QUndoStack * undoStack = nullptr;
+	//! Document history includes structural changes as well as field edits.
+	void resetUndoHistory();
+	void suspendUndoHistory();
+	void beginUndoTransaction( const QString & text );
+	void endUndoTransaction();
+	void flushUndoHistory();
+	void applyCommand( QUndoCommand * command );
+	void undo();
+	void redo();
 
 public slots:
 	void updateSettings();
 
 signals:
+	void undoAboutToRestore();
+	void undoRestored();
 	void linksChanged();
 	void lodSliderChanged( bool ) const;
 	void beginUpdateHeader();
 
 protected:
+	friend class NifSnapshotCommand;
+	std::shared_ptr<const NifUndoState> undoBaseline;
+	bool undoEnabled = false;
+	bool undoRestoring = false;
+	bool undoPending = false;
+	int undoDepth = 0;
+	QString undoText;
+	void queueUndoCapture();
+	std::shared_ptr<const NifUndoState> captureUndoState() const;
+	void restoreUndoState( const std::shared_ptr<const NifUndoState> & snapshot );
 	// BaseModel
 
 	NifItem * getItem( NifItem * parent, const QString & name ) const override final;

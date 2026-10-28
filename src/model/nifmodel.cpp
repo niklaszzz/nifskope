@@ -42,6 +42,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QDebug>
 #include <QFile>
 #include <QSettings>
+#include <QUndoStack>
 
 
 
@@ -52,6 +53,13 @@ NifModel::NifModel( QObject * parent ) : BaseModel( parent )
 	updateSettings();
 
 	clear();
+	undoStack = new QUndoStack( this );
+	undoStack->setUndoLimit( 50 );
+	connect( this, &NifModel::dataChanged, this, &NifModel::queueUndoCapture );
+	connect( this, &NifModel::rowsInserted, this, &NifModel::queueUndoCapture );
+	connect( this, &NifModel::rowsRemoved, this, &NifModel::queueUndoCapture );
+	connect( this, &NifModel::modelReset, this, &NifModel::queueUndoCapture );
+	connect( this, &NifModel::linksChanged, this, &NifModel::queueUndoCapture );
 }
 
 void NifModel::updateSettings()

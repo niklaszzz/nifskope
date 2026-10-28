@@ -40,6 +40,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gl/glscene.h"
 #include "model/kfmmodel.h"
 #include "model/nifmodel.h"
+#include "physx/physxcollision.h"
 #include "model/nifproxymodel.h"
 #include "ui/widgets/fileselect.h"
 #include "ui/widgets/floatslider.h"
@@ -48,6 +49,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ui/widgets/nifview.h"
 #include "ui/widgets/refrbrowser.h"
 #include "ui/widgets/inspect.h"
+#include "ui/widgets/uvedit.h"
 #include "ui/widgets/xmlcheck.h"
 #include "ui/about_dialog.h"
 #include "ui/settingsdialog.h"
@@ -152,11 +154,15 @@ void NifSkope::initActions()
 
 	// Undo/Redo
 	undoAction = nif->undoStack->createUndoAction( this, tr( "&Undo" ) );
+	disconnect( undoAction, nullptr, nif->undoStack, nullptr );
+	connect( undoAction, &QAction::triggered, nif, &NifModel::undo );
 	undoAction->setShortcut( QKeySequence::Undo );
 	undoAction->setObjectName( "aUndo" );
 	undoAction->setIcon( QIcon( ":btn/undo" ) );
 	allActions << undoAction;
 	redoAction = nif->undoStack->createRedoAction( this, tr( "&Redo" ) );
+	disconnect( redoAction, nullptr, nif->undoStack, nullptr );
+	connect( redoAction, &QAction::triggered, nif, &NifModel::redo );
 	redoAction->setShortcut( QKeySequence::Redo );
 	redoAction->setObjectName( "aRedo" );
 	redoAction->setIcon( QIcon( ":btn/redo" ) );
@@ -240,7 +246,74 @@ void NifSkope::initActions()
 	};
 
 	selectActions = agroup( { ui->aSelectObject, ui->aSelectVertex }, true );
-	connect( selectActions, &QActionGroup::triggered, ogl->getScene(), &Scene::updateSelectMode );
+	connect( selectActions, &QActionGroup::triggered, this, [this](QAction * action) {
+		ogl->setEditSelectionMode(Scene::SelMode(action->data().toInt()));
+	} );
+	ui->aSelectVertex->setToolTip(tr("Edit the mesh selected in Object mode. LMB drag selects through the mesh; Shift adds, Ctrl toggles. Space+LMB pans; Alt+LMB orbits."));
+
+	auto gizmoActions = new QActionGroup( this );
+	gizmoActions->setExclusive( true );
+	const QStringList gizmoNames = { tr( "Select" ), tr( "Move" ), tr( "Rotate" ), tr( "Scale" ) };
+	const QStringList gizmoTips = {
+		tr( "Select blocks and orbit the camera" ),
+		tr( "Drag a colored arrow to move along a local axis. Escape cancels." ),
+		tr( "Drag a colored ring to rotate around a local axis. Escape cancels." ),
+		tr( "Drag the center handle to scale uniformly. Escape cancels." )
+	};
+	for ( int i = 0; i < gizmoNames.size(); ++i ) {
+		auto action = new QAction( gizmoNames[i], this );
+		ui->tRender->insertAction( ui->aViewTop, action );
+		action->setObjectName( QString("aGizmo%1").arg(i) );
+		action->setCheckable( true );
+		action->setToolTip( gizmoTips[i] );
+		action->setData( i );
+		gizmoActions->addAction( action );
+		action->setChecked( i == 0 );
+	}
+	ui->tRender->insertSeparator( ui->aViewTop );
+	ui->mRender->addMenu( tr("Transform") )->addActions( gizmoActions->actions() );
+	connect( gizmoActions, &QActionGroup::triggered, this, [this]( QAction * action ) {
+		if ( action->data().toInt() != GLView::GizmoSelect && ogl->getScene()->selMode != Scene::SelVertex ) ui->aSelectObject->trigger();
+		ogl->setGizmoMode( GLView::GizmoMode( action->data().toInt() ) );
+	} );
+	auto snapVertices=new QAction(tr("Snap Vertices"),this);
+	snapVertices->setObjectName("aSnapVertices");
+	snapVertices->setCheckable(true);
+	snapVertices->setToolTip(tr("During a vertex Move drag, snap the selection's nearest anchor vertex to another vertex within 14 pixels of the pointer."));
+	ui->tRender->insertAction(ui->aViewTop,snapVertices);
+	ui->mRender->addAction(snapVertices);
+	connect(snapVertices,&QAction::toggled,ogl,&GLView::setVertexSnap);
+	auto uvEditor=new QAction(tr("UV Editor"),this);uvEditor->setObjectName("aUVEditor");
+	uvEditor->setToolTip(tr("Open the UV editor for the mesh selected in the 3D view or Block List."));
+	ui->tRender->insertAction(ui->aViewTop,uvEditor);ui->mRender->addAction(uvEditor);
+	connect(uvEditor,&QAction::triggered,this,[this](){UVWidget::createEditor(nif,ogl->getScene()->currentBlock);});
+	auto rebuildCollision=new QAction(tr("Rebuild Collision"),this);
+	rebuildCollision->setObjectName("aRebuildCollision");
+	rebuildCollision->setToolTip(tr("Update static PhysX triangle collision from the matching source meshes. Edit the source meshes first, then rebuild and save. This is undoable."));
+	ui->tRender->insertAction(ui->aViewTop,rebuildCollision);
+	ui->mRender->addAction(rebuildCollision);
+	auto updateCollisionAction=[this,rebuildCollision](){rebuildCollision->setEnabled(PhysXCollision::hasCollision(nif));};
+	connect(nif,&NifModel::modelReset,this,updateCollisionAction);
+	connect(nif,&NifModel::linksChanged,this,updateCollisionAction);
+	updateCollisionAction();
+	connect(rebuildCollision,&QAction::triggered,this,[this](){
+		QVector<PhysXCollision::Mesh> meshes;QString error;
+		if(!PhysXCollision::collect(nif,meshes,error)){QMessageBox::warning(this,tr("Rebuild Collision"),error);return;}
+		QSettings settings;
+		QString dll=settings.value("PhysX/Cooking DLL").toString();
+		if(!QFileInfo::exists(dll)) {
+			dll=QFileDialog::getOpenFileName(this,tr("Select MicroVolts Bin/PhysXCooking.dll"),QString(),tr("PhysX Cooking library (PhysXCooking.dll)"));
+			if(dll.isEmpty())return;
+		}
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		int count=0;
+		bool ok=PhysXCollision::rebuild(nif,dll,QCoreApplication::applicationDirPath()+"/PhysxCooker.exe",error,&count);
+		QApplication::restoreOverrideCursor();
+		if(!ok){QMessageBox::warning(this,tr("Rebuild Collision"),error);return;}
+		settings.setValue("PhysX/Cooking DLL",dll);
+		if(!ui->aShowCollision->isChecked())ui->aShowCollision->trigger();
+		statusBar()->showMessage(tr("Rebuilt %1 collision meshes. Save the NIF to keep the changes. Ctrl+Z undoes the rebuild.").arg(count),15000);
+	});
 
 	showActions = agroup( { ui->aShowAxes, ui->aShowGrid, ui->aShowNodes, ui->aShowCollision,
 						  ui->aShowConstraints, ui->aShowMarkers, ui->aShowHidden, ui->aDoSkinning
@@ -751,6 +824,7 @@ void NifSkope::openDlg()
 
 void NifSkope::onLoadBegin()
 {
+	nif->suspendUndoHistory();
 	// Disconnect the models from the views
 	swapModels();
 
@@ -826,7 +900,7 @@ void NifSkope::onLoadComplete( bool success, QString & fname )
 
 	// Mark window as unmodified
 	setWindowModified( false );
-	nif->undoStack->clear();
+	nif->resetUndoHistory();
 	indexStack->clear();
 
 	// Center the model on load
@@ -861,6 +935,7 @@ void NifSkope::onSaveComplete( bool success, QString & fname )
 
 	if ( success ) {
 		// Update if Save As results in filename change
+		nif->flushUndoHistory();
 		setWindowFilePath( fname );
 		// Mark window as unmodified
 		nif->undoStack->setClean();
@@ -870,6 +945,7 @@ void NifSkope::onSaveComplete( bool success, QString & fname )
 
 bool NifSkope::saveConfirm()
 {
+	nif->flushUndoHistory();
 	if ( !cfg.suppressSaveConfirm && (isWindowModified() || !nif->undoStack->isClean()) ) {
 		QMessageBox::StandardButton response;
 		response = QMessageBox::question( this,

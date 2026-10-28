@@ -6,6 +6,7 @@
 #include "ui/widgets/fileselect.h"
 #include "ui/widgets/nifeditors.h"
 #include "ui/widgets/uvedit.h"
+#include "model/uveditdata.h"
 
 #include "lib/nvtristripwrapper.h"
 
@@ -264,6 +265,7 @@ public:
 	{
 		auto iUVs = getUV( nif, index );
 		auto iTriData = nif->getIndex( index, "Num Triangles" );
+		if(nif->inherits(index,"NiMesh"))return !UVEditData::coordinateSets(nif,index).isEmpty();
 		return (iUVs.isValid() || iTriData.isValid())
 			&& (nif->inherits( index, "NiTriBasedGeom" ) || nif->inherits( index, "BSTriShape" ));
 	}

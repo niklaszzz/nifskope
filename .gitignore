@@ -1,4 +1,6 @@
 # Generated
+/build/Desktop_*/
+/build/qt-check/
 .moc/
 .obj/
 .qrc/

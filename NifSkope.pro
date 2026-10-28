@@ -7,6 +7,15 @@ TARGET   = NifSkope
 
 QT += xml opengl network widgets
 
+SOURCES += src/glview_gizmo.cpp
+SOURCES += src/model/nifmodel_undo.cpp
+SOURCES += src/model/vertexedit.cpp src/glview_edit.cpp
+HEADERS += src/model/vertexedit.h
+SOURCES += src/model/uveditdata.cpp
+HEADERS += src/model/uveditdata.h
+SOURCES += src/physx/physxcollision.cpp
+HEADERS += src/physx/physxcollision.h
+
 # Require Qt 5.7 or higher
 contains(QT_VERSION, ^5\\.[0-6]\\..*) {
 	message("Cannot build NifSkope with Qt version $${QT_VERSION}")
@@ -122,6 +131,19 @@ build_pass|!debug_and_release {
 	MOC_DIR = $${INTERMEDIATE}/.moc
 	RCC_DIR = $${INTERMEDIATE}/.qrc
 	OBJECTS_DIR = $${INTERMEDIATE}/.obj
+	# The game SDK is 32-bit. Keep its bridge beside the application for either
+	# build configuration. No PhysX SDK or game binaries are bundled.
+	win32 {
+		PHYSX_CSC = $$(WINDIR)/Microsoft.NET/Framework/v4.0.30319/csc.exe
+		exists($$PHYSX_CSC) {
+			physx_helper.target = $$DESTDIR/PhysxCooker.exe
+			physx_helper.depends = $$PWD/src/physx/PhysxCooker.cs
+			physx_helper.commands = if not exist $$system_quote($$system_path($$DESTDIR)) mkdir $$system_quote($$system_path($$DESTDIR)) $$escape_expand(\n\t)
+			physx_helper.commands += $$system_quote($$system_path($$PHYSX_CSC)) /nologo /target:exe /platform:x86 /out:$$system_quote($$system_path($$physx_helper.target)) $$system_quote($$system_path($$PWD/src/physx/PhysxCooker.cs))
+			QMAKE_EXTRA_TARGETS += physx_helper
+			PRE_TARGETDEPS += $$physx_helper.target
+		}
+	}
 }
 
 ###############################
@@ -330,14 +352,14 @@ nvtristrip {
 }
 
 qhull {
-    !*msvc*:QMAKE_CFLAGS += -isystem ../nifskope/lib/qhull/src
-    !*msvc*:QMAKE_CXXFLAGS += -isystem ../nifskope/lib/qhull/src
+    !*msvc*:QMAKE_CFLAGS += -isystem $$shell_quote($$PWD/lib/qhull/src)
+    !*msvc*:QMAKE_CXXFLAGS += -isystem $$shell_quote($$PWD/lib/qhull/src)
     else:INCLUDEPATH += lib/qhull/src
     HEADERS += $$files($$PWD/lib/qhull/src/libqhull/*.h, false)
 }
 
 gli {
-    !*msvc*:QMAKE_CXXFLAGS += -isystem ../nifskope/lib/gli/gli -isystem ../nifskope/lib/gli/external
+    !*msvc*:QMAKE_CXXFLAGS += -isystem $$shell_quote($$PWD/lib/gli/gli) -isystem $$shell_quote($$PWD/lib/gli/external)
     else:INCLUDEPATH += lib/gli/gli lib/gli/external
     HEADERS += $$files($$PWD/lib/gli/gli/*.hpp, true)
     HEADERS += $$files($$PWD/lib/gli/gli/*.inl, true)
@@ -346,8 +368,8 @@ gli {
 }
 
 zlib {
-    !*msvc*:QMAKE_CFLAGS += -isystem ../nifskope/lib/zlib
-    !*msvc*:QMAKE_CXXFLAGS += -isystem ../nifskope/lib/zlib
+    !*msvc*:QMAKE_CFLAGS += -isystem $$shell_quote($$PWD/lib/zlib)
+    !*msvc*:QMAKE_CXXFLAGS += -isystem $$shell_quote($$PWD/lib/zlib)
     else:INCLUDEPATH += lib/zlib
     HEADERS += $$files($$PWD/lib/zlib/*.h, false)
     SOURCES += $$files($$PWD/lib/zlib/*.c, false)

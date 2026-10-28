@@ -335,6 +335,8 @@ void Mesh::transform()
 			// and build the semantic-index maps for each datastream's components
 			using CompSemIdxMap = QVector<QPair<NiMesh::Semantic, uint>>;
 			QVector<CompSemIdxMap> compSemanticIndexMaps;
+			QVector<int> streamOrder;
+			bool hasIndexStream = false;
 			for ( int i = 0; i < nif->rowCount( iData ); i++ ) {
 				auto stream = nif->getLink( iData.child( i, 0 ), "Stream" );
 				auto iDataStream = nif->getBlock( stream );
@@ -360,15 +362,12 @@ void Mesh::transform()
 					if ( sem == NiMesh::E_TEXCOORD )
 						coords.append( TexCoords() );
 
-					// Assure Index datastream is first and Usage is correct
-					bool invalidIndex = false;
-					if ( (sem == NiMesh::E_INDEX && (i != 0 || usage != NiMesh::USAGE_VERTEX_INDEX))
-						 || (usage == NiMesh::USAGE_VERTEX_INDEX && (i != 0 || sem != NiMesh::E_INDEX)) )
-						invalidIndex = true;
+					// Validate the semantic/usage pairing independently of file order.
+					bool invalidIndex = (sem == NiMesh::E_INDEX) != (usage == NiMesh::USAGE_VERTEX_INDEX);
 
 					if ( invalidIndex ) {
 						Message::append( tr( NIMESH_ABORT ),
-										 tr( "[%1] NifSkope requires 'INDEX' datastream be first, with Usage type 'USAGE_VERTEX_INDEX'." )
+										 tr( "[%1] The INDEX semantic requires USAGE_VERTEX_INDEX, and index streams must contain only INDEX components." )
 										 .arg( stream ),
 										 QMessageBox::Warning );
 						return;
@@ -378,19 +377,31 @@ void Mesh::transform()
 				}
 
 				compSemanticIndexMaps << compSemanticIndexMap;
+				if ( usage == NiMesh::USAGE_VERTEX_INDEX ) {
+					if ( hasIndexStream || numComponents != 1 ) {
+						Message::append( tr(NIMESH_ABORT), tr("[%1] Multiple index streams or index components are not supported.").arg(stream), QMessageBox::Warning );
+						return;
+					}
+					hasIndexStream = true;
+					streamOrder.prepend( i );
+				} else {
+					streamOrder.append( i );
+				}
 			}
 
-			// This NiMesh does not have vertices, abort
-			if ( !(semFlags & NiMesh::HAS_POSITION || semFlags & NiMesh::HAS_POSITION_BP) )
+			// Indexed rendering requires both an index stream and vertex positions.
+			if ( !hasIndexStream || !(semFlags & NiMesh::HAS_POSITION || semFlags & NiMesh::HAS_POSITION_BP) )
 				return;
 
 			// The number of triangle indices across the submeshes for this NiMesh
 			quint32 totalIndices = 0;
 			// The highest triangle index value in this NiMesh
 			quint32 maxIndex = 0;
-			// The Nth component after ignoring DataStreamUsage > 1
+			// Number of decoded streams after ignoring DataStreamUsage > 1.
 			int compIdx = 0;
-			for ( int i = 0; i < nif->rowCount( iData ); i++ ) {
+			// Decode indices before vertex attributes without changing the NIF's
+			// datastream references or their semantic/component associations.
+			for ( int i : streamOrder ) {
 				// TODO: For now, submeshes are not actually used and the regions are 
 				// filled in order for each data stream.
 				// Submeshes may be required if total index values exceed USHRT_MAX
@@ -555,16 +566,24 @@ void Mesh::transform()
 							}
 							break;
 						case NiMesh::F_UINT16_1:
+						case NiMesh::F_UINT32_1:
 							if ( compType == NiMesh::E_INDEX ) {
 								Q_ASSERT( usage == NiMesh::USAGE_VERTEX_INDEX );
 								// TODO: The total index value across all submeshes
 								// is likely allowed to exceed USHRT_MAX.
-								// For now limit the index.
-								quint32 ind = tempValue.get<quint16>() + off;
+								// Accept 32-bit storage without truncating vertex addresses.
+								quint32 value = typeK == NiMesh::F_UINT32_1 ? tempValue.get<quint32>() : tempValue.get<quint16>();
+								quint64 ind = quint64(value) + off;
+								if ( typeK == NiMesh::F_UINT32_1 && ind > 0xFFFF ) {
+									Message::append( tr(NIMESH_ABORT), tr("[%1] Vertex index %2 exceeds the renderer's 16-bit vertex limit.").arg(stream).arg(ind), QMessageBox::Warning );
+									verts.clear();
+									indices.clear();
+									return;
+									}
 								if ( ind > 0xFFFF )
 									qDebug() << QString( "[%1] %2" ).arg( stream ).arg( ind );
 
-								ind = std::min( ind, (quint32)0xFFFF );
+								ind = std::min( ind, quint64(0xFFFF) );
 
 								// Store the highest index
 								if ( ind > maxIndex )
@@ -584,6 +603,13 @@ void Mesh::transform()
 							break;
 						case NiMesh::F_UINT8_4:
 							// BLENDINDICES, do nothing for now
+							break;
+						case NiMesh::F_FLOAT32_4:
+							Q_ASSERT( usage == NiMesh::USAGE_VERTEX );
+							if ( compType == NiMesh::E_COLOR ) {
+								auto c = tempValue.get<Vector4>();
+								colors[j + off] = Color4( c[0], c[1], c[2], c[3] );
+							}
 							break;
 						case NiMesh::F_NORMUINT8_4:
 							Q_ASSERT( usage == NiMesh::USAGE_VERTEX );
@@ -1135,6 +1161,7 @@ void Mesh::drawShapes( NodeList * secondPass, bool presort )
 
 void Mesh::drawVerts() const
 {
+	if(scene->currentBlock!=iBlock && scene->currentBlock!=iData) return;
 	glDisable( GL_LIGHTING );
 	glNormalColor();
 

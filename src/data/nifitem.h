@@ -124,6 +124,10 @@ Q_DECLARE_OPERATORS_FOR_FLAGS( NifSharedData::DataFlags );
 class NifData
 {
 public:
+	bool operator==( const NifData & other ) const
+	{
+		return d.constData() == other.d.constData() && value == other.value;
+	}
 	NifData( const QString & name, const QString & type, const QString & temp, const NifValue & val, const QString & arg,
 			 const QString & arr1 = QString(), const QString & arr2 = QString(), const QString & cond = QString(),
 			 quint32 ver1 = 0, quint32 ver2 = 0, NifSharedData::DataFlags flag = NifSharedData::None )
@@ -593,6 +597,7 @@ public:
 
 	//! Return the value of the item data (const version)
 	inline const NifValue & value() const { return itemData.value; }
+	const NifData & data() const { return itemData; }
 	//! Return the value of the item data
 	inline NifValue & value() { return itemData.value; }
 

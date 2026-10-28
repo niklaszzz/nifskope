@@ -237,7 +237,7 @@ void NifTreeView::pasteTo( QModelIndex iDest, const NifValue & srcValue )
 
 	auto n = static_cast<NifModel*>(nif);
 	if ( n )
-		n->undoStack->push( new ChangeValueCommand( iDest, destValue, srcValue, valueType, n ) );
+		n->applyCommand( new ChangeValueCommand( iDest, destValue, srcValue, valueType, n ) );
 }
 
 void NifTreeView::paste()
@@ -402,8 +402,8 @@ void NifTreeView::keyPressEvent( QKeyEvent * e )
 
 				// Add row swap to undo
 				ChangeValueCommand::createTransaction();
-				nif->undoStack->push( new ChangeValueCommand( firstValue, nif->getValue( newValue ), nif->getValue( firstValue ), "Link", nif ) );
-				nif->undoStack->push( new ChangeValueCommand( newValue, nif->getValue( firstValue ), nif->getValue( newValue ), "Link", nif ) );
+				nif->applyCommand( new ChangeValueCommand( firstValue, nif->getValue( newValue ), nif->getValue( firstValue ), "Link", nif ) );
+				nif->applyCommand( new ChangeValueCommand( newValue, nif->getValue( firstValue ), nif->getValue( newValue ), "Link", nif ) );
 			}
 		}
 	}
@@ -427,6 +427,7 @@ void NifTreeView::keyPressEvent( QKeyEvent * e )
 		}
 
 		if ( nif && spell->isApplicable( nif, oldidx ) ) {
+			nif->beginUndoTransaction( spell->name() );
 			selectionModel()->setCurrentIndex( QModelIndex(), QItemSelectionModel::Clear | QItemSelectionModel::Rows );
 
 			bool noSignals = spell->batch();
@@ -462,6 +463,7 @@ void NifTreeView::keyPressEvent( QKeyEvent * e )
 				emit clicked( newidx );
 			}
 
+			nif->endUndoTransaction();
 			return;
 		}
 	}

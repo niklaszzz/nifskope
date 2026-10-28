@@ -561,6 +561,8 @@ void NifValue::operator=( const NifValue & other )
 
 bool NifValue::operator==( const NifValue & other ) const
 {
+	if ( typ != other.typ )
+		return false;
 	switch ( typ ) {
 	case tByte:
 		return val.u08 == other.val.u08;
@@ -695,8 +697,8 @@ bool NifValue::operator==( const NifValue & other ) const
 		QByteArray * a1 = static_cast<QByteArray *>(val.data);
 		QByteArray * a2 = static_cast<QByteArray *>(other.val.data);
 
-		if ( a1->isNull() || a2->isNull() )
-			return false;
+		if ( !a1 || !a2 )
+			return a1 == a2;
 
 		return *a1 == *a2;
 	}
@@ -732,6 +734,7 @@ bool NifValue::operator==( const NifValue & other ) const
 		return *d1 == *d2;
 	}
 	case tNone:
+		return true;
 	default:
 		return false;
 	}

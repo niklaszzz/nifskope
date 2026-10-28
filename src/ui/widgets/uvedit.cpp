@@ -37,6 +37,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "gl/gltex.h"
 #include "gl/gltools.h"
 #include "model/nifmodel.h"
+#include "model/uveditdata.h"
+#include <QMessageBox>
+#include <QFileDialog>
+#include <QFocusEvent>
 #include "ui/settingsdialog.h"
 
 #include "lib/nvtristripwrapper.h"
@@ -80,12 +84,16 @@ UVWidget * UVWidget::createEditor( NifModel * nif, const QModelIndex & idx )
 	uvw->setAttribute( Qt::WA_DeleteOnClose );
 
 	if ( !uvw->setNifData( nif, idx ) ) {
-		qCWarning( nsSpell ) << tr( "Could not load texture data for UV editor." );
+		QString reason=tr("Select a mesh with UV coordinates first.");
+		if(nif && nif->inherits(idx,"NiMesh")){UVEditData data;data.read(nif,idx,0,&reason);}
+		QMessageBox::warning(nullptr,tr("UV Editor"),reason);
 		delete uvw;
 		return nullptr;
 	}
 
 	uvw->show();
+	uvw->frameUVs();
+	uvw->raise();uvw->activateWindow();
 	return uvw;
 }
 
@@ -114,6 +122,7 @@ UVWidget::UVWidget( QWidget * parent )
 	: QGLWidget( QGLFormat( QGL::SampleBuffers ), parent, 0, Qt::Tool ), undoStack( new QUndoStack( this ) )
 {
 	setWindowTitle( tr( "UV Editor" ) );
+	resize(700,700);
 	setFocusPolicy( Qt::StrongFocus );
 
 	textures = new TexCache( this );
@@ -129,14 +138,23 @@ UVWidget::UVWidget( QWidget * parent )
 
 	setContextMenuPolicy( Qt::ActionsContextMenu );
 
-	QAction * aUndo = undoStack->createUndoAction( this );
-	QAction * aRedo = undoStack->createRedoAction( this );
+	QAction * aUndo = documentUndo = new QAction(tr("Undo"),this);
+	QAction * aRedo = documentRedo = new QAction(tr("Redo"),this);
+	connect(aUndo,&QAction::triggered,this,[this](){if(nif && !uvDragging)nif->undo();});
+	connect(aRedo,&QAction::triggered,this,[this](){if(nif && !uvDragging)nif->redo();});
 
 	aUndo->setShortcut( QKeySequence::Undo );
 	aRedo->setShortcut( QKeySequence::Redo );
 
 	addAction( aUndo );
 	addAction( aRedo );
+	auto frame=new QAction(tr("Frame UVs"),this);frame->setShortcut(QKeySequence("F"));addAction(frame);
+	connect(frame,&QAction::triggered,this,&UVWidget::frameUVs);
+	auto background=new QAction(tr("Load Background Texture…"),this);addAction(background);
+	connect(background,&QAction::triggered,this,[this](){
+		QString path=QFileDialog::getOpenFileName(this,tr("UV Background Texture"),nif?nif->getFolder():QString(),tr("Textures (*.dds *.tga *.bmp);;All files (*)"));
+		if(!path.isEmpty()){texfile=path;texsource=QModelIndex();updateGL();}
+	});
 
 	QAction * aSep = new QAction( this );
 	aSep->setSeparator( true );
@@ -187,6 +205,7 @@ UVWidget::UVWidget( QWidget * parent )
 
 UVWidget::~UVWidget()
 {
+	if(uvDragging && nif)nif->endUndoTransaction();
 	delete textures;
 	nif = nullptr;
 }
@@ -196,9 +215,9 @@ void UVWidget::updateSettings()
 	QSettings settings;
 	settings.beginGroup( "Settings/Render/Colors/" );
 
-	cfg.background = settings.value( "Background" ).value<QColor>();
-	cfg.highlight = settings.value( "Highlight" ).value<QColor>();
-	cfg.wireframe = settings.value( "Wireframe" ).value<QColor>();
+	cfg.background = settings.value( "Background",QColor(32,32,32) ).value<QColor>();
+	cfg.highlight = settings.value( "Highlight",QColor(255,180,40) ).value<QColor>();
+	cfg.wireframe = settings.value( "Wireframe",QColor(235,235,235) ).value<QColor>();
 
 	settings.endGroup();
 }
@@ -372,6 +391,9 @@ void UVWidget::paintGL()
 	glPopMatrix();
 
 	drawTexCoords();
+	qglColor(QColor(255,225,150));
+	renderText(12,20,tr("LMB select/drag | Box select | Shift add | MMB pan | Wheel zoom | F frame"));
+	renderText(12,38,tr("Right-click: scale, rotate, textures and UV sets | Ctrl+Z undo"));
 
 	glDisable( GL_DEPTH_TEST );
 	glDepthMask( GL_FALSE );
@@ -587,6 +609,17 @@ void UVWidget::setSizeHint( const QSize & s )
 	sHint = s;
 }
 
+void UVWidget::frameUVs()
+{
+	if(texcoords.isEmpty())return;
+	Vector2 low=texcoords.first(),high=low;
+	for(auto uv:texcoords)for(int a=0;a<2;++a){low[a]=qMin(low[a],uv[a]);high[a]=qMax(high[a],uv[a]);}
+	auto center=(low+high)*.5f;
+	pos=QPointF(-(center[0]-.5)*BASESIZE,(center[1]-.5)*BASESIZE);
+	zoom=qMax(.2,qMax(double(high[0]-low[0])*BASESIZE/qMax(1,width()),double(high[1]-low[1])*BASESIZE/qMax(1,height()))*1.2);
+	updateViewRect(width(),height());updateGL();
+}
+
 QSize UVWidget::minimumSizeHint() const
 {
 	return QSizeF( BASESIZE, BASESIZE ).toSize();
@@ -666,6 +699,7 @@ void UVWidget::mouseMoveEvent( QMouseEvent * e )
 			if ( kbd[Qt::Key_Y] )
 				dPosX = 0.0;
 
+			if(!selection.isEmpty() && !uvDragging){nif->beginUndoTransaction(tr("Move UVs"));uvDragging=true;}
 			moveSelection( dPosX, dPosY );
 		}
 		break;
@@ -710,6 +744,7 @@ void UVWidget::mouseMoveEvent( QMouseEvent * e )
 
 void UVWidget::mouseReleaseEvent( QMouseEvent * e )
 {
+	if(e->button()==Qt::LeftButton && uvDragging){uvDragging=false;nif->endUndoTransaction();}
 	switch ( e->button() ) {
 	case Qt::LeftButton:
 
@@ -758,6 +793,12 @@ void UVWidget::wheelEvent( QWheelEvent * e )
 	updateGL();
 }
 
+void UVWidget::focusOutEvent(QFocusEvent * event)
+{
+	if(uvDragging && nif){uvDragging=false;nif->endUndoTransaction();}
+	QGLWidget::focusOutEvent(event);
+}
+
 void UVWidget::keyPressEvent( QKeyEvent * e )
 {
 	switch ( e->key() ) {
@@ -791,7 +832,8 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 		// it says the calls need to remain symmetric to the connect() ones.
 		// Otherwise, use QMetaObject::Connection
 		//disconnect( nif );
-		this->disconnect();
+		QObject::disconnect(nif,nullptr,this,nullptr);
+		QObject::disconnect(nif->undoStack,nullptr,this,nullptr);
 	}
 
 	undoStack->clear();
@@ -799,27 +841,43 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 	nif = nifModel;
 	iShape = nifIndex;
 	isDataOnSkin = false;
+	texcoords.clear();faces.clear();texcoords2faces.clear();selection.clear();texsource=QModelIndex();texfile.clear();
+	currentCoordSet=0;currentTexSlot=0;
+	for(auto menu:findChildren<QMenu *>(QString(),Qt::FindDirectChildrenOnly))delete menu;
+	for(auto group:findChildren<QActionGroup *>(QString(),Qt::FindDirectChildrenOnly))delete group;
 
 	// Version dependent actions
 	if ( nif && nif->getVersionNumber() != 0x14020007 ) {
 		coordSetGroup = new QActionGroup( this );
 		connect( coordSetGroup, &QActionGroup::triggered, this, &UVWidget::selectCoordSet );
 
-		coordSetSelect = new QMenu( tr( "Select Coordinate Set" ) );
+		coordSetSelect = new QMenu( tr( "Select Coordinate Set" ),this );
 		addAction( coordSetSelect->menuAction() );
 		connect( coordSetSelect, &QMenu::aboutToShow, this, &UVWidget::getCoordSets );
 
 		texSlotGroup = new QActionGroup( this );
 		connect( texSlotGroup, &QActionGroup::triggered, this, &UVWidget::selectTexSlot );
 
-		menuTexSelect = new QMenu( tr( "Select Texture Slot" ) );
+		menuTexSelect = new QMenu( tr( "Select Texture Slot" ),this );
 		addAction( menuTexSelect->menuAction() );
 		connect( menuTexSelect, &QMenu::aboutToShow, this, &UVWidget::getTexSlots );
 	}
 
 	if ( nif ) {
-		connect( nif, &NifModel::modelReset, this, &UVWidget::close );
-		connect( nif, &NifModel::destroyed, this, &UVWidget::close );
+		connect(nif,&NifModel::modelReset,this,[this](){if(!restoringUndo)close();});
+		connect(nif,&NifModel::undoAboutToRestore,this,[this](){restoreShape=nif->getBlockNumber(iShape);restoreBlockCount=nif->getBlockCount();restoringUndo=true;});
+		connect(nif,&NifModel::undoRestored,this,[this](){
+			auto model=nif;auto selected=selection;int coordinateSet=currentCoordSet;
+			if(model->getBlockCount()!=restoreBlockCount || !setNifData(model,model->getBlock(restoreShape))){restoringUndo=false;close();return;}
+			restoringUndo=false;
+			if(model->inherits(iShape,"NiMesh")){currentCoordSet=coordinateSet;if(!setTexCoords()){close();return;}}
+			for(int i:selected)if(i>=0 && i<texcoords.size())selection<<i;
+			updateGL();
+		});
+		connect(nif->undoStack,&QUndoStack::canUndoChanged,this,[this](bool value){documentUndo->setEnabled(value);});
+		connect(nif->undoStack,&QUndoStack::canRedoChanged,this,[this](bool value){documentRedo->setEnabled(value);});
+		documentUndo->setEnabled(nif->undoStack->canUndo());documentRedo->setEnabled(nif->undoStack->canRedo());
+		connect(nif,&NifModel::destroyed,this,[this](){nif=nullptr;uvDragging=false;close();});
 		connect( nif, &NifModel::dataChanged, this, &UVWidget::nifDataChanged );
 		connect( nif, &NifModel::rowsRemoved, this, &UVWidget::nifDataChanged );
 	}
@@ -848,7 +906,11 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 		}
 	}
 
-	if ( nif->inherits( iShapeData, "NiTriBasedGeomData" ) ) {
+	if(nif->inherits(iShape,"NiMesh")) {
+		iShapeData=iShape;iTexCoords=iShape;
+		auto sets=UVEditData::coordinateSets(nif,iShape);if(sets.isEmpty())return false;currentCoordSet=sets.first();
+		if(!setTexCoords())return false;
+	} else if ( nif->inherits( iShapeData, "NiTriBasedGeomData" ) ) {
 		iTexCoords = nif->getIndex( iShapeData, "UV Sets" ).child( 0, 0 );
 
 		if ( !iTexCoords.isValid() || !nif->rowCount( iTexCoords ) ) {
@@ -876,6 +938,7 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 			return false;
 	}
 
+	if(texcoords.isEmpty() || faces.isEmpty())return false;
 	auto props = nif->getLinkArray( iShape, "Properties" );
 	props << nif->getLink( iShape, "Shader Property" );
 	for ( const auto l : props )
@@ -891,15 +954,14 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 
 					if ( iTexSource.isValid() ) {
 						currentCoordSet = nif->get<int>( iTex, "UV Set" );
-						iTexCoords = nif->getIndex( iShapeData, "UV Sets" ).child( currentCoordSet, 0 );
+						if(!nif->inherits(iShape,"NiMesh"))iTexCoords = nif->getIndex( iShapeData, "UV Sets" ).child( currentCoordSet, 0 );
 						texsource  = iTexSource;
 
 						if ( setTexCoords() )
 							return true;
 					}
-				} else {
-					currentTexSlot++;
 				}
+				currentTexSlot++;
 			}
 		} else {
 			iTexProp = nif->getBlock( l, "NiTextureProperty" );
@@ -954,6 +1016,12 @@ bool UVWidget::setNifData( NifModel * nifModel, const QModelIndex & nifIndex )
 
 bool UVWidget::setTexCoords()
 {
+	faces.clear();texcoords2faces.clear();
+	if(nif->inherits(iShape,"NiMesh")) {
+		UVEditData data;if(!data.read(nif,iShape,currentCoordSet))return false;texcoords=data.coordinates;
+		for(int i=0;i<data.indices.size();i+=3){int f=faces.size();faces<<face(f,data.indices[i],data.indices[i+1],data.indices[i+2]);for(int j=0;j<3;++j)texcoords2faces.insertMulti(data.indices[i+j],f);}
+		return true;
+	}
 	if ( nif->inherits( iShape, "NiTriBasedGeom" ) )
 		texcoords = nif->getArray<Vector2>( iTexCoords );
 
@@ -994,6 +1062,7 @@ bool UVWidget::setTexCoords()
 		faces.append( face( fIdx, t[0], t[1], t[2] ) );
 
 		for ( int i = 0; i < 3; i++ ) {
+			if(t[i]>=texcoords.size()){faces.clear();return false;}
 			texcoords2faces.insertMulti( t[i], fIdx );
 		}
 	}
@@ -1007,7 +1076,10 @@ void UVWidget::updateNif()
 		disconnect( nif, &NifModel::dataChanged, this, &UVWidget::nifDataChanged );
 		nif->setState( BaseModel::Processing );
 
-		if ( nif->inherits( iShapeData, "NiTriBasedGeomData" ) ) {
+		if(nif->inherits(iShape,"NiMesh")) {
+			UVEditData data;
+			if(!data.read(nif,iShape,currentCoordSet) || !data.write(nif,texcoords))setTexCoords();
+		} else if ( nif->inherits( iShapeData, "NiTriBasedGeomData" ) ) {
 			nif->setArray<Vector2>( iTexCoords, texcoords );
 		} else if ( nif->inherits( iShape, "BSTriShape" ) ) {
 			int numVerts = 0;
@@ -1024,6 +1096,7 @@ void UVWidget::updateNif()
 		}
 		
 		nif->restoreState();
+		emit nif->dataChanged(iShape,iShape);
 		connect( nif, &NifModel::dataChanged, this, &UVWidget::nifDataChanged );
 	}
 }
@@ -1036,6 +1109,7 @@ void UVWidget::nifDataChanged( const QModelIndex & idx )
 	}
 
 	if ( nif->getBlock( idx ) == iShapeData ) {
+		if(nif->inherits(iShape,"NiMesh") && setTexCoords()){updateGL();return;}
 		//if ( ! setNifData( nif, iShape ) )
 		{
 			close();
@@ -1213,7 +1287,10 @@ protected:
 
 void UVWidget::moveSelection( double moveX, double moveY )
 {
-	undoStack->push( new UVWMoveCommand( this, moveX, moveY ) );
+	if(selection.isEmpty())return;
+	nif->beginUndoTransaction(tr("Move UVs"));
+	nif->applyCommand(new UVWMoveCommand(this,moveX,moveY));
+	nif->endUndoTransaction();
 }
 
 // For mouse-driven scaling: insert state/flag for scaling mode
@@ -1301,19 +1378,23 @@ protected:
 
 void UVWidget::scaleSelection()
 {
+	if(selection.isEmpty())return;
 	ScalingDialog * scaleDialog = new ScalingDialog( this );
 
 	if ( scaleDialog->exec() == QDialog::Accepted ) {
+		nif->beginUndoTransaction(tr("Scale and translate UVs"));
 		// order does not matter here, since we scale around the center
 		// don't perform identity transforms
 		if ( !( scaleDialog->getXScale() == 1.0 && scaleDialog->getYScale() == 1.0 ) ) {
-			undoStack->push( new UVWScaleCommand( this, scaleDialog->getXScale(), scaleDialog->getYScale() ) );
+			nif->applyCommand( new UVWScaleCommand( this, scaleDialog->getXScale(), scaleDialog->getYScale() ) );
 		}
 
 		if ( !( scaleDialog->getXMove() == 0.0 && scaleDialog->getYMove() == 0.0 ) ) {
-			undoStack->push( new UVWMoveCommand( this, scaleDialog->getXMove(), scaleDialog->getYMove() ) );
+			nif->applyCommand( new UVWMoveCommand( this, scaleDialog->getXMove(), scaleDialog->getYMove() ) );
 		}
+		nif->endUndoTransaction();
 	}
+	delete scaleDialog;
 }
 
 ScalingDialog::ScalingDialog( QWidget * parent ) : QDialog( parent )
@@ -1496,16 +1577,20 @@ protected:
 
 void UVWidget::rotateSelection()
 {
+	if(selection.isEmpty())return;
 	bool ok;
 	float rotateFactor = QInputDialog::getDouble( this, "NifSkope", tr( "Enter rotation angle" ), 0.0, -360.0, 360.0, 2, &ok );
 
 	if ( ok ) {
-		undoStack->push( new UVWRotateCommand( this, rotateFactor ) );
+		nif->beginUndoTransaction(tr("Rotate UVs"));
+		nif->applyCommand( new UVWRotateCommand( this, rotateFactor ) );
+		nif->endUndoTransaction();
 	}
 }
 
 void UVWidget::getTexSlots()
 {
+	if(currentTexSlot<0 || currentTexSlot>=texnames.size())currentTexSlot=0;
 	menuTexSelect->clear();
 	validTexs.clear();
 
@@ -1521,7 +1606,7 @@ void UVWidget::getTexSlots()
 					if ( validTexs.indexOf( name ) == -1 ) {
 						validTexs << name;
 						QAction * temp;
-						menuTexSelect->addAction( temp = new QAction( name, this ) );
+						menuTexSelect->addAction( temp = new QAction( name, menuTexSelect ) );
 						texSlotGroup->addAction( temp );
 						temp->setCheckable( true );
 
@@ -1554,7 +1639,7 @@ void UVWidget::selectTexSlot()
 
 				if ( iTexSource.isValid() ) {
 					currentCoordSet = nif->get<int>( iTex, "UV Set" );
-					iTexCoords = nif->getIndex( iShapeData, "UV Sets" ).child( currentCoordSet, 0 );
+					if(!nif->inherits(iShape,"NiMesh"))iTexCoords = nif->getIndex( iShapeData, "UV Sets" ).child( currentCoordSet, 0 );
 					texsource  = iTexSource;
 					setTexCoords();
 					updateGL();
@@ -1570,11 +1655,12 @@ void UVWidget::getCoordSets()
 	coordSetSelect->clear();
 
 	// TODO: Broken for newer nif.xml where NiGeometryData has been corrected
-	quint8 numUvSets = nif->get<quint8>( iShapeData, "Num UV Sets" );
+	auto sets=UVEditData::coordinateSets(nif,iShape);
+	if(!nif->inherits(iShape,"NiMesh"))for(int i=0;i<nif->rowCount(nif->getIndex(iShapeData,"UV Sets"));++i)sets<<i;
 
-	for ( int i = 0; i < numUvSets; i++ ) {
+	for ( int i : sets ) {
 		QAction * temp;
-		coordSetSelect->addAction( temp = new QAction( QString( "%1" ).arg( i ), this ) );
+		coordSetSelect->addAction( temp = new QAction( QString( "%1" ).arg( i ), coordSetSelect ) );
 		coordSetGroup->addAction( temp );
 		temp->setCheckable( true );
 
@@ -1583,6 +1669,7 @@ void UVWidget::getCoordSets()
 		}
 	}
 
+	if(nif->inherits(iShape,"NiMesh"))return;
 	coordSetSelect->addSeparator();
 	aDuplicateCoords = new QAction( tr( "Duplicate current" ), this );
 	coordSetSelect->addAction( aDuplicateCoords );
@@ -1606,6 +1693,11 @@ void UVWidget::selectCoordSet()
 
 void UVWidget::changeCoordSet( int setToUse )
 {
+	if(nif->inherits(iShape,"NiMesh")) {
+		int old=currentCoordSet;currentCoordSet=setToUse;
+		if(!setTexCoords()){currentCoordSet=old;setTexCoords();return;}
+		selection.clear();undoStack->clear();frameUVs();return;
+	}
 	// update
 	currentCoordSet = setToUse;
 	nif->set<quint8>( iTex, "UV Set", currentCoordSet );

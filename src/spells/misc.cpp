@@ -51,7 +51,7 @@ public:
 
 	QModelIndex cast( NifModel * nif, const QModelIndex & index ) override final
 	{
-		nif->undoStack->push( new ArrayUpdateCommand( index, nif ) );
+		nif->applyCommand( new ArrayUpdateCommand( index, nif ) );
 		return index;
 	}
 };

@@ -300,7 +300,7 @@ public:
 
 				ChangeValueCommand::createTransaction();
 				auto nif = static_cast<NifModel *>(model);
-				nif->undoStack->push( new ChangeValueCommand( index, v, vedit->getValue().toString(), valueType, nif ) );
+				nif->applyCommand( new ChangeValueCommand( index, v, vedit->getValue().toString(), valueType, nif ) );
 			}
 
 			model->setData( index, v, Qt::EditRole );
@@ -326,7 +326,7 @@ public:
 					auto valueType = model->sibling( index.row(), 0, index ).data().toString();
 
 					auto nif = static_cast<NifModel *>(model);
-					nif->undoStack->push( new ToggleCheckBoxListCommand( index, v, valueType, nif ) );
+					nif->applyCommand( new ToggleCheckBoxListCommand( index, v, valueType, nif ) );
 				}
 
 				model->setData( index, v, Qt::EditRole );

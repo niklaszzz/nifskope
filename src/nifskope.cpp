@@ -167,15 +167,23 @@ NifSkope::NifSkope()
 	nif->setMessageMode( BaseModel::UserMessage );
 
 	// Setup QUndoStack
-	nif->undoStack = new QUndoStack( this );
+	nif->resetUndoHistory();
 
 	indexStack = new QUndoStack( this );
-
-	// Setup Window Modified on data change
-	connect( nif, &NifModel::dataChanged, [this]( const QModelIndex &, const QModelIndex & ) {
-		// Only if UI is enabled (prevents asterisk from flashing during save/load)
-		if ( !windowTitle().isEmpty() && isEnabled() )
-			setWindowModified( true );
+	connect( nif->undoStack, &QUndoStack::cleanChanged, this, [this]( bool clean ) {
+		setWindowModified( !clean );
+	} );
+	auto undoBlock = std::make_shared<int>( -1 );
+	connect( nif, &NifModel::undoAboutToRestore, this, [this, undoBlock]() {
+		*undoBlock = nif->getBlockNumber( ogl->getScene()->currentBlock );
+	} );
+	connect( nif, &NifModel::undoRestored, this, [this, undoBlock]() {
+		indexStack->clear();
+		currentIdx = QModelIndex();
+		header->setRootIndex( nif->getHeader() );
+		auto block = nif->getBlock( *undoBlock );
+		select( block.isValid() ? block : nif->getHeader() );
+		indexStack->clear();
 	} );
 
 	kfm = new KfmModel( this );
@@ -190,6 +198,9 @@ NifSkope::NifSkope()
 	list = ui->list;
 	list->setModel( proxy );
 	list->setSortingEnabled( false );
+	list->setSelectionMode( QAbstractItemView::ExtendedSelection );
+	list->setSelectionBehavior( QAbstractItemView::SelectRows );
+	list->setToolTip( tr( "Ctrl-click to toggle individual blocks; Shift-click to select a range." ) );
 	list->setItemDelegate( nif->createDelegate( this, book ) );
 	list->installEventFilter( this );
 	list->header()->resizeSection( NifModel::NameCol, 250 );
@@ -995,6 +1006,7 @@ void NifSkope::load()
 
 void NifSkope::save()
 {
+	nif->flushUndoHistory();
 	// Assure file path is absolute
 	// If not absolute, it is loaded from a BSA
 	QFileInfo curFile( currentFile );
