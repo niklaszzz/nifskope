@@ -85,6 +85,7 @@ void Mesh::clear()
 	transVerts.clear();
 	transNorms.clear();
 	transColors.clear();
+	unshadedColors.clear();
 	transTangents.clear();
 	transBitangents.clear();
 
@@ -1161,7 +1162,7 @@ void Mesh::drawShapes( NodeList * secondPass, bool presort )
 
 void Mesh::drawVerts() const
 {
-	if(scene->currentBlock!=iBlock && scene->currentBlock!=iData) return;
+	if(!Node::SELECTING || (scene->currentBlock!=iBlock && scene->currentBlock!=iData)) return;
 	glDisable( GL_LIGHTING );
 	glNormalColor();
 

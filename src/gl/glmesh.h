@@ -120,6 +120,7 @@ protected:
 	QVector<Vector3> transNorms;
 	//! Transformed colors (alpha blended)
 	QVector<Color4> transColors;
+	QVector<Color4> unshadedColors;
 	//! Transformed tangents
 	QVector<Vector3> transTangents;
 	//! Transformed bitangents

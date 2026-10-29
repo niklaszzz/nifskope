@@ -31,6 +31,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ***** END LICENCE BLOCK *****/
 
 #include "glview.h"
+#include <QContextMenuEvent>
 
 #include "message.h"
 #include "nifskope.h"
@@ -98,7 +99,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 GLGraphicsView::GLGraphicsView( QWidget * parent ) : QGraphicsView()
 {
-	setContextMenuPolicy( Qt::CustomContextMenu );
+	setContextMenuPolicy( Qt::PreventContextMenu );
 	setFocusPolicy( Qt::ClickFocus );
 	setMouseTracking( true );
 	setAcceptDrops( true );
@@ -158,7 +159,7 @@ GLView::GLView( const QGLFormat & format, QWidget * p, const QGLWidget * shareWi
 	//setAttribute( Qt::WA_NoSystemBackground );
 	setAutoFillBackground( false );
 	setAcceptDrops( true );
-	setContextMenuPolicy( Qt::CustomContextMenu );
+	setContextMenuPolicy( Qt::PreventContextMenu );
 
 	// Manually handle the buffer swap
 	// Fixes bug with QGraphicsView and double buffering
@@ -224,6 +225,7 @@ GLView::GLView( const QGLFormat & format, QWidget * p, const QGLWidget * shareWi
 
 GLView::~GLView()
 {
+	clearReferences();
 	flush();
 
 	delete textures;
@@ -312,7 +314,7 @@ void GLView::initializeGL()
 	//	Made viewport and aspect member variables.
 	//	They were being updated every single frame instead of only when resizing.
 	//glGetIntegerv( GL_VIEWPORT, viewport );
-	aspect = (GLdouble)width() / (GLdouble)height();
+	aspect = GLdouble(qMax(1,width())) / qMax(1,height());
 
 	// Check for errors
 	while ( ( err = glGetError() ) != GL_NO_ERROR )
@@ -394,6 +396,10 @@ void GLView::paintGL()
 	
 
 	// Save GL state
+	// QGraphicsView/layout changes can leave an older GL viewport behind.
+	// Use this drawable's current size for both rasterization and projection.
+	aspect = GLdouble(qMax(1,width())) / qMax(1,height());
+	glViewport(0,0,qMax(1,width()),qMax(1,height()));
 	glPushAttrib( GL_ALL_ATTRIB_BITS );
 	glMatrixMode( GL_PROJECTION );
 	glPushMatrix();
@@ -401,10 +407,9 @@ void GLView::paintGL()
 	glPushMatrix();
 
 	// Clear Viewport
-	if ( scene->visMode & Scene::VisSilhouette ) {
-		qglClearColor( QColor( 255, 255, 255, 255 ) );
-	}
-	//glViewport( 0, 0, width(), height() );
+	glDisable(GL_SCISSOR_TEST);
+	glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDepthMask(GL_TRUE);
+	qglClearColor((scene->visMode & Scene::VisSilhouette)?QColor(255,255,255):cfg.background);
 	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT );
 	
 	
@@ -620,6 +625,7 @@ void GLView::paintGL()
 
 	// Draw the model
 	scene->draw();
+	drawReferences();
 	drawEditorOverlay();
 	drawGizmo();
 
@@ -696,11 +702,9 @@ void GLView::paintGL()
 
 void GLView::resizeGL( int width, int height )
 {
-	resize( width, height );
-
 	makeCurrent();
-	aspect = (GLdouble)width / (GLdouble)height;
-	glViewport( 0, 0, width, height );
+	aspect = GLdouble(qMax(1,width)) / qMax(1,height);
+	glViewport( 0, 0, qMax(1,width), qMax(1,height) );
 	qglClearColor( cfg.background );
 
 	update();
@@ -708,9 +712,8 @@ void GLView::resizeGL( int width, int height )
 
 void GLView::resizeEvent( QResizeEvent * e )
 {
-	Q_UNUSED( e );
-	// This function should never be called.
-	// Moved to NifSkope::eventFilter()
+	// Let Qt resize the native drawable and invoke resizeGL together.
+	QGLWidget::resizeEvent(e);
 }
 
 void GLView::setFrontalLight( bool frontal )
@@ -726,6 +729,21 @@ void GLView::setBrightness( int value )
 	}
 
 	brightness = float(value) / 720.0;
+	update();
+}
+
+void GLView::setUnshaded(bool enabled)
+{
+	scene->options.setFlag(Scene::Unshaded,enabled);
+	QSettings settings;settings.setValue("GLView/Unshaded",enabled);
+	update();
+}
+
+void GLView::setDetailBrightness(int percent)
+{
+	percent=qBound(0,percent,200);
+	scene->detailBrightness=percent/100.0f;
+	QSettings settings;settings.setValue("GLView/DetailBrightness",percent);
 	update();
 }
 
@@ -935,7 +953,10 @@ void GLView::move( float x, float y, float z )
 
 void GLView::rotate( float x, float y, float z )
 {
-	Rot += Vector3( x, y, z );
+	 // During RMB look, rotate around the eye rather than the orbit center.
+ if(flyNavigating && view!=ViewWalk)Pos+=Matrix::euler(Rot[0]/180.f*PI,Rot[1]/180.f*PI,Rot[2]/180.f*PI).inverted()*Vector3(0,0,-Dist*2);
+ Rot += Vector3( x, y, z );
+ if(flyNavigating && view!=ViewWalk)Pos-=Matrix::euler(Rot[0]/180.f*PI,Rot[1]/180.f*PI,Rot[2]/180.f*PI).inverted()*Vector3(0,0,-Dist*2);
 	updateViewpoint();
 	update();
 }
@@ -980,6 +1001,7 @@ void GLView::setCenter()
 
 		setOrientation( view );
 	}
+	if(view==ViewWalk)Pos+=Matrix::euler(Rot[0]/180.f*PI,Rot[1]/180.f*PI,Rot[2]/180.f*PI).inverted()*Vector3(0,0,-Dist*2);
 }
 
 void GLView::setDistance( float x )
@@ -1055,8 +1077,18 @@ void GLView::flipOrientation()
 
 void GLView::setOrientation( GLView::ViewState state, bool recenter )
 {
+	stopFlyNavigation();
 	if ( state == view )
 		return;
+	finishGizmo(true);
+	const bool enteringWalk=state==ViewWalk;
+	if(enteringWalk || view==ViewWalk) {
+		// Orbit distance is an extra camera translation. Fold it into/out of
+		// Pos so changing navigation mode does not move the camera.
+		float offset=enteringWalk?-Dist*2:Dist*2;
+		Pos+=Matrix::euler(Rot[0]/180.f*PI,Rot[1]/180.f*PI,Rot[2]/180.f*PI).inverted()*Vector3(0,0,offset);
+		kbd.clear();mouseMov=mouseRot=Vector3();
+	}
 
 	switch ( state ) {
 	case ViewBottom:
@@ -1084,12 +1116,15 @@ void GLView::setOrientation( GLView::ViewState state, bool recenter )
 	view = state;
 
 	// Recenter
-	if ( recenter )
+	if ( recenter && !enteringWalk )
 		center();
+	if(enteringWalk)doCenter=false;
+	gizmoVisible=false;update();
 }
 
 void GLView::updateViewpoint()
 {
+	if(flyNavigating)return;
 	switch ( view ) {
 	case ViewTop:
 	case ViewBottom:
@@ -1118,37 +1153,44 @@ void GLView::flush()
 
 void GLView::setNif( NifModel * nif )
 {
+	stopFlyNavigation();
 	finishGizmo( true );
 	gizmoVisible = false;
-	if ( model ) {
-		// disconnect( model ) may not work with new Qt5 syntax...
-		// it says the calls need to remain symmetric to the connect() ones.
-		// Otherwise, use QMetaObject::Connection
-		QObject::disconnect( model, nullptr, this, nullptr );
-	}
+	// Reference layers also observe these models. Disconnect only the active
+	// editor's bindings, keeping reference-cache invalidation alive across tabs.
+	for(auto connection:activeModelConnections)disconnect(connection);
+	activeModelConnections.clear();
 
 	model = nif;
+	scene->isolatedRoot=QModelIndex();emit isolationChanged(false);
 	editMesh = QModelIndex();
+	faceSelection=false;selectedFaces.clear();
 	selectedVertices.clear();
 	vertexProjectionValid = false;
 	lightMarkers.clear();
 	physxMeshes.clear();physxDirty=true;
+	portalPreview.clear();highlightedPortal=-1;
 
 	if ( model ) {
-		connect( model, &NifModel::dataChanged, this, &GLView::dataChanged );
-		connect( model, &NifModel::linksChanged, this, &GLView::modelLinked );
-		connect( model, &NifModel::modelReset, this, &GLView::modelChanged );
-		connect( model, &NifModel::destroyed, this, &GLView::modelDestroyed );
-		connect( model, &NifModel::undoAboutToRestore, this, [this]() {
+		activeModelConnections<<connect( model, &NifModel::dataChanged, this, &GLView::dataChanged );
+		activeModelConnections<<connect( model, &NifModel::linksChanged, this, &GLView::modelLinked );
+		activeModelConnections<<connect( model, &NifModel::modelReset, this, &GLView::modelChanged );
+		activeModelConnections<<connect( model, &NifModel::destroyed, this, &GLView::modelDestroyed );
+		activeModelConnections<<connect( model, &NifModel::undoAboutToRestore, this, [this]() {
 			editRestoreBlock = model->getBlockNumber( editMesh );
+		isolateRestoreBlock=model->getBlockNumber(scene->isolatedRoot);
+		selectionRestoreBlock=model->getBlockNumber(scene->currentBlock);
 		} );
-		connect( model, &NifModel::undoRestored, this, [this]() {
-			if ( scene->selMode == Scene::SelVertex && editRestoreBlock >= 0 ) {
+		activeModelConnections<<connect( model, &NifModel::undoRestored, this, [this]() {
+			scene->isolatedRoot=model->getBlock(isolateRestoreBlock);emit isolationChanged(scene->isolatedRoot.isValid());
+		if ( scene->selMode == Scene::SelVertex && editRestoreBlock >= 0 ) {
 				editMesh = model->getBlock( editRestoreBlock );
 				refreshEditData();
 				setCurrentIndex(editMesh);
 			}
+			else if(selectionRestoreBlock>=0)setCurrentIndex(model->getBlock(selectionRestoreBlock));
 			vertexProjectionValid = false;
+			emit editSelectionChanged();
 		} );
 	}
 
@@ -1166,6 +1208,7 @@ void GLView::setCurrentIndex( const QModelIndex & index )
 
 	scene->currentBlock = model->getBlock( index );
 	scene->currentIndex = index.sibling( index.row(), 0 );
+	emit currentBlockChanged(scene->currentBlock);
 
 	update();
 }
@@ -1343,23 +1386,21 @@ void GLView::advanceGears()
 	// keys based on user preferences of what app they would like to
 	// emulate for the control scheme
 	// Rotation
+	if(gizmoAxis>=0)return;
 	if ( kbd[ Qt::Key_Up ] )    rotate( -cfg.rotSpd * dT, 0, 0 );
 	if ( kbd[ Qt::Key_Down ] )  rotate( +cfg.rotSpd * dT, 0, 0 );
 	if ( kbd[ Qt::Key_Left ] )  rotate( 0, 0, -cfg.rotSpd * dT );
 	if ( kbd[ Qt::Key_Right ] ) rotate( 0, 0, +cfg.rotSpd * dT );
 
-	// Movement
-	if ( kbd[ Qt::Key_A ] ) move( +cfg.moveSpd * dT, 0, 0 );
-	if ( kbd[ Qt::Key_D ] ) move( -cfg.moveSpd * dT, 0, 0 );
-	if ( kbd[ Qt::Key_W ] ) move( 0, 0, +cfg.moveSpd * dT );
-	if ( kbd[ Qt::Key_S ] ) move( 0, 0, -cfg.moveSpd * dT );
-	//if ( kbd[ Qt::Key_F ] ) move( 0, +MOV_SPD * dT, 0 );
-	//if ( kbd[ Qt::Key_R ] ) move( 0, -MOV_SPD * dT, 0 );
-
-	// Zoom
-	if ( kbd[ Qt::Key_Q ] ) setDistance( Dist * 1.0 / 1.1 );
-	if ( kbd[ Qt::Key_E ] ) setDistance( Dist * 1.1 );
-
+    if(flyNavigating) {
+        float speed=cfg.moveSpd*flySpeedMultiplier*(kbd[Qt::Key_Shift]?4.f:1.f)*dT;
+        if(kbd[Qt::Key_A])move(speed,0,0);
+        if(kbd[Qt::Key_D])move(-speed,0,0);
+        if(kbd[Qt::Key_W])move(0,0,speed);
+        if(kbd[Qt::Key_S])move(0,0,-speed);
+        // Pos uses the configured up-axis basis before camera rotation.
+        if(kbd[Qt::Key_Q] || kbd[Qt::Key_E]){Pos[2]+=(int(kbd[Qt::Key_Q])-int(kbd[Qt::Key_E]))*speed;updateViewpoint();update();}
+    }
 	// Focal Length
 	if ( kbd[ Qt::Key_PageUp ] )   zoom( 1.1f );
 	if ( kbd[ Qt::Key_PageDown ] ) zoom( 1 / 1.1f );
@@ -1526,6 +1567,7 @@ void GLView::saveImage()
 			int ss = grpSize->checkedId();
 
 			int w, h;
+			const QSize originalSize=size();
 
 			w = width();
 			h = height();
@@ -1535,7 +1577,7 @@ void GLView::saveImage()
 				w *= ss;
 				h *= ss;
 
-				resizeGL( w, h );
+				resize( w, h );
 			}
 			
 			QOpenGLFramebufferObjectFormat fboFmt;
@@ -1557,7 +1599,7 @@ void GLView::saveImage()
 
 			// Return viewport to original size
 			if ( ss > 1 )
-				resizeGL( width(), height() );
+				resize( originalSize );
 
 
 			QImageWriter writer( file->file() );
@@ -1606,7 +1648,7 @@ void GLView::dragEnterEvent( QDragEnterEvent * e )
 		if ( url.scheme() == "file" ) {
 			QString fn = url.toLocalFile();
 
-			if ( textures->canLoad( fn ) ) {
+			if ( QFileInfo(fn).isFile() && textures->canLoad( fn ) ) {
 				fnDragTex = textures->stripPath( fn, model->getFolder() );
 				e->accept();
 				return;
@@ -1671,22 +1713,68 @@ void GLView::dropEvent( QDropEvent * e )
 
 void GLView::focusOutEvent( QFocusEvent * )
 {
+	stopFlyNavigation();
 	finishGizmo( true );
 	vertexSelecting = false;
 	kbd.clear();
 }
 
+bool GLView::event(QEvent * event)
+{
+  if(event->type()==QEvent::ContextMenu){
+  auto context=static_cast<QContextMenuEvent *>(event);
+  if(context->reason()==QContextMenuEvent::Keyboard)emit viewportContextMenuRequested(context->pos().x()<0?rect().center():context->pos());
+  event->accept();return true;
+ }
+ if(event->type()==QEvent::KeyPress){auto key=static_cast<QKeyEvent *>(event);
+  if(key->key()==Qt::Key_Tab && key->modifiers()==Qt::NoModifier){if(!key->isAutoRepeat())cycleSelectionMode();event->accept();return true;}}
+ return QGLWidget::event(event);
+}
+
 void GLView::keyPressEvent( QKeyEvent * event )
 {
+    if(flyNavigating) {
+        if(event->key()==Qt::Key_Escape){stopFlyNavigation();event->accept();return;}
+        switch(event->key()) {
+        case Qt::Key_W:case Qt::Key_A:case Qt::Key_S:case Qt::Key_D:case Qt::Key_Q:case Qt::Key_E:case Qt::Key_Shift:
+            if(event->key()!=Qt::Key_Shift)flyGestureUsed=true;
+            kbd[event->key()]=true;break;
+        default:break;
+        }
+        event->accept();return;
+    }
 	if ( gizmoAxis >= 0 && event->key() == Qt::Key_Escape ) {
 		finishGizmo( true );
 		return;
 	}
 	if ( gizmoAxis >= 0 ) return;
+    if(event->key()==Qt::Key_X && event->modifiers()==Qt::ShiftModifier) {
+        if(!event->isAutoRepeat() && !vertexSelecting)setEditXRay(!editXRay);
+        event->accept();return;
+    }
+    if(!vertexSelecting && event->modifiers()==Qt::NoModifier && (event->key()==Qt::Key_V || event->key()==Qt::Key_W || event->key()==Qt::Key_E || event->key()==Qt::Key_R)) {
+        if(!event->isAutoRepeat())setGizmoMode(event->key()==Qt::Key_V?GizmoSelect:event->key()==Qt::Key_W?GizmoMove:event->key()==Qt::Key_E?GizmoRotate:GizmoScale);
+        event->accept();return;
+    }
+    if(event->key()==Qt::Key_L && event->modifiers()==Qt::ControlModifier){selectLinkedEditElements();event->accept();return;}
+	if(event->key()==Qt::Key_N && event->modifiers()==Qt::NoModifier){showNumericTransform();return;}
+	if(event->key()==Qt::Key_H && event->modifiers()==Qt::ShiftModifier){setIsolateSelection(!scene->isolatedRoot.isValid());return;}
+	if(event->key()==Qt::Key_H && event->modifiers()==Qt::AltModifier){setIsolateSelection(false);return;}
 	if ( scene->selMode == Scene::SelVertex ) {
+		if(event->key()==Qt::Key_I && event->modifiers()==Qt::ControlModifier){
+			if(!event->isAutoRepeat() && !vertexSelecting && refreshEditData()){
+				QSet<int> inverted;
+				if(faceSelection){for(int i=0;i<faceData.triangles.size();++i)if(!selectedFaces.contains(i))inverted.insert(i);selectedFaces=inverted;refreshEditData();}
+				else {for(int i=0;i<editData.positions.size();++i)if(!selectedVertices.contains(i))inverted.insert(i);selectedVertices=inverted;}
+				gizmoVisible=false;emit editSelectionChanged();update();
+			}
+			event->accept();return;
+		}
+		if(event->key()==Qt::Key_Delete){if(faceSelection)deleteSelectedFaces();else deleteSelectedVertices();return;}
 		if ( event->key() == Qt::Key_Escape && vertexSelecting ) { vertexSelecting=false; update(); return; }
 		if ( event->matches(QKeySequence::SelectAll) && refreshEditData() ) {
 			for(int i=0;i<editData.positions.size();++i) selectedVertices.insert(i);
+			if(faceSelection)for(int f=0;f<faceData.triangles.size();++f)selectedFaces.insert(f);emit editSelectionChanged();
 			update(); return;
 		}
 	}
@@ -1697,14 +1785,6 @@ void GLView::keyPressEvent( QKeyEvent * event )
 	case Qt::Key_Right:
 	case Qt::Key_PageUp:
 	case Qt::Key_PageDown:
-	case Qt::Key_A:
-	case Qt::Key_D:
-	case Qt::Key_W:
-	case Qt::Key_S:
-	//case Qt::Key_R:
-	//case Qt::Key_F:
-	case Qt::Key_Q:
-	case Qt::Key_E:
 	case Qt::Key_Space:
 		kbd[event->key()] = true;
 		break;
@@ -1724,6 +1804,8 @@ void GLView::keyPressEvent( QKeyEvent * event )
 
 void GLView::keyReleaseEvent( QKeyEvent * event )
 {
+    if(event->isAutoRepeat())return;
+    if(kbd.contains(event->key())){kbd.remove(event->key());event->accept();return;}
 	switch ( event->key() ) {
 	case Qt::Key_Up:
 	case Qt::Key_Down:
@@ -1731,14 +1813,6 @@ void GLView::keyReleaseEvent( QKeyEvent * event )
 	case Qt::Key_Right:
 	case Qt::Key_PageUp:
 	case Qt::Key_PageDown:
-	case Qt::Key_A:
-	case Qt::Key_D:
-	case Qt::Key_W:
-	case Qt::Key_S:
-	//case Qt::Key_R:
-	//case Qt::Key_F:
-	case Qt::Key_Q:
-	case Qt::Key_E:
 	case Qt::Key_Space:
 		kbd[event->key()] = false;
 		break;
@@ -1764,6 +1838,10 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 		dragGizmo( event->pos() );
 		return;
 	}
+    if(flyNavigating) {
+        if(event->buttons() & Qt::RightButton){if((event->pos()-flyPressPoint).manhattanLength()>4)flyGestureUsed=true;mouseRot+=Vector3((event->y()-lastPos.y())*.5f,0,(event->x()-lastPos.x())*.5f);lastPos=event->pos();}
+        event->accept();return;
+    }
 	if ( vertexSelecting ) { vertexSelectionEnd=event->pos(); update(); return; }
 	if ( event->buttons() == Qt::NoButton ) {
 		if ( pickGizmo( event->pos() ) >= 0 ) setCursor( Qt::OpenHandCursor );
@@ -1778,8 +1856,6 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 	} else if ( (event->buttons() & Qt::MidButton) || (event->buttons() & Qt::LeftButton && kbd[Qt::Key_Space]) ) {
 		float d = axis / (qMax( width(), height() ) + 1);
 		mouseMov += Vector3( dx * d, -dy * d, 0 );
-	} else if ( event->buttons() & Qt::RightButton ) {
-		setDistance( Dist - (dx + dy) * (axis / (qMax( width(), height() ) + 1)) );
 	}
 
 	lastPos = event->pos();
@@ -1787,6 +1863,11 @@ void GLView::mouseMoveEvent( QMouseEvent * event )
 
 void GLView::mousePressEvent( QMouseEvent * event )
 {
+    if(event->button()==Qt::RightButton) {
+        if(gizmoAxis<0 && !vertexSelecting){flyClickTimer.start();flyPressPoint=event->pos();flyGestureUsed=false;flyNavigating=true;lastPos=event->pos();mouseMov=mouseRot=Vector3();kbd.clear();kbd[Qt::Key_Shift]=bool(event->modifiers() & Qt::ShiftModifier);lastTime=QTime::currentTime();setCursor(Qt::ClosedHandCursor);}
+        event->accept();return;
+    }
+    if(flyNavigating){event->accept();return;}
 	if ( gizmoAxis < 0 && event->button() == Qt::LeftButton )
 		gizmoReleasePending = false;
 	if ( event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier
@@ -1816,6 +1897,13 @@ void GLView::mousePressEvent( QMouseEvent * event )
 
 void GLView::mouseReleaseEvent( QMouseEvent * event )
 {
+    if(event->button()==Qt::RightButton){
+        bool quickClick=flyNavigating && flyClickTimer.isValid() && flyClickTimer.elapsed()<=250 && !flyGestureUsed && (event->pos()-flyPressPoint).manhattanLength()<=4;
+        stopFlyNavigation();event->accept();
+        if(quickClick)emit viewportContextMenuRequested(event->pos());
+        return;
+    }
+    if(flyNavigating){event->accept();return;}
 	if ( vertexSelecting && event->button() == Qt::LeftButton ) {
 		vertexSelecting=false;
 		selectEditVertices(event->pos());
@@ -1846,6 +1934,7 @@ void GLView::mouseReleaseEvent( QMouseEvent * event )
 
 	if ( !(mods & Qt::AltModifier) ) {
 		QModelIndex idx = indexAt( event->pos(), cycleSelect );
+		if(view==ViewWalk && !idx.isValid())return;
 		scene->currentBlock = model->getBlock( idx );
 		scene->currentIndex = idx.sibling( idx.row(), 0 );
 
@@ -1886,6 +1975,7 @@ void GLView::mouseReleaseEvent( QMouseEvent * event )
 void GLView::wheelEvent( QWheelEvent * event )
 {
 	if ( gizmoAxis >= 0 ) return;
+    if(flyNavigating) {flyGestureUsed=true;flySpeedMultiplier=qBound(.01f,flySpeedMultiplier*float(std::pow(1.2,event->angleDelta().y()/120.0)),100.f);event->accept();update();return;}
 	if ( view == ViewWalk )
 		mouseMov += Vector3( 0, 0, event->delta() );
 	else
@@ -1903,9 +1993,25 @@ void GLGraphicsView::setupViewport( QWidget * viewport )
 	QGraphicsView::setupViewport( viewport );
 }
 
+bool GLGraphicsView::event(QEvent * event)
+{
+  if(event->type()==QEvent::ContextMenu){
+  auto context=static_cast<QContextMenuEvent *>(event);
+  if(context->reason()==QContextMenuEvent::Keyboard)if(auto view=qobject_cast<GLView *>(viewport()))emit view->viewportContextMenuRequested(view->rect().center());
+  event->accept();return true;
+ }
+ if(event->type()==QEvent::KeyPress){auto key=static_cast<QKeyEvent *>(event);
+  if(key->key()==Qt::Key_Tab && key->modifiers()==Qt::NoModifier){if(auto view=qobject_cast<GLView *>(viewport())){if(!key->isAutoRepeat())view->cycleSelectionMode();event->accept();return true;}}}
+ return QGraphicsView::event(event);
+}
+
 bool GLGraphicsView::eventFilter( QObject * o, QEvent * e )
 {
-	//GLView * glWidget = qobject_cast<GLView *>(o);
+    if(o==viewport() && e->type()==QEvent::ContextMenu) {
+        if(static_cast<QContextMenuEvent *>(e)->reason()==QContextMenuEvent::Keyboard)
+            if(auto view=qobject_cast<GLView *>(viewport()))emit view->viewportContextMenuRequested(view->rect().center());
+        e->accept();return true;
+    }	//GLView * glWidget = qobject_cast<GLView *>(o);
 	//if ( glWidget ) {
 	//
 	//}
@@ -1942,6 +2048,7 @@ void GLGraphicsView::drawBackground( QPainter * painter, const QRectF & rect )
 
 void GLGraphicsView::dragEnterEvent( QDragEnterEvent * e )
 {
+	draggedNifs.clear();
 	// Intercept NIF files
 	if ( e->mimeData()->hasUrls() ) {
 		QList<QUrl> urls = e->mimeData()->urls();
@@ -1949,14 +2056,14 @@ void GLGraphicsView::dragEnterEvent( QDragEnterEvent * e )
 			if ( url.scheme() == "file" ) {
 				QString fn = url.toLocalFile();
 				QFileInfo finfo( fn );
-				if ( finfo.exists() && NifSkope::fileExtensions().contains( finfo.suffix(), Qt::CaseInsensitive ) ) {
+				if ( finfo.isFile() && NifSkope::fileExtensions().contains( finfo.suffix(), Qt::CaseInsensitive ) ) {
 					draggedNifs << finfo.absoluteFilePath();
 				}
 			}
 		}
 
 		if ( !draggedNifs.isEmpty() ) {
-			e->accept();
+			e->acceptProposedAction();
 			return;
 		}
 	}
@@ -1984,7 +2091,7 @@ void GLGraphicsView::dragLeaveEvent( QDragLeaveEvent * e )
 void GLGraphicsView::dragMoveEvent( QDragMoveEvent * e )
 {
 	if ( !draggedNifs.isEmpty() ) {
-		e->accept();
+		e->acceptProposedAction();
 		return;
 	}
 
@@ -1997,13 +2104,18 @@ void GLGraphicsView::dragMoveEvent( QDragMoveEvent * e )
 void GLGraphicsView::dropEvent( QDropEvent * e )
 {
 	if ( !draggedNifs.isEmpty() ) {
-		auto ns = qobject_cast<NifSkope *>(parentWidget());
+		// The workspace adds a container between this view and the main window.
+		auto ns = qobject_cast<NifSkope *>(window());
 		if ( ns ) {
-			ns->openFiles( draggedNifs );
+			auto files=draggedNifs;
+			draggedNifs.clear();
+			ns->openFiles( files );
+			e->acceptProposedAction();
+			return;
 		}
 
 		draggedNifs.clear();
-		e->accept();
+		e->ignore();
 		return;
 	}
 
@@ -2068,4 +2180,12 @@ void GLGraphicsView::wheelEvent( QWheelEvent * e )
 	if ( glWidget ) {
 		glWidget->wheelEvent( e );
 	}
+}
+
+void GLView::stopFlyNavigation()
+{
+ if(!flyNavigating)return;
+ flyNavigating=false;
+ for(int key:{Qt::Key_W,Qt::Key_A,Qt::Key_S,Qt::Key_D,Qt::Key_Q,Qt::Key_E,Qt::Key_Shift})kbd.remove(key);
+ mouseMov=mouseRot=Vector3();unsetCursor();if(flyGestureUsed)updateViewpoint();update();
 }

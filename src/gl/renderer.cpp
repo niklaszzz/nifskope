@@ -48,6 +48,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QFile>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
 #include <QSettings>
 #include <QTextStream>
 
@@ -456,6 +457,9 @@ void Renderer::updateShaders()
 
 void Renderer::releaseShaders()
 {
+	if(detailProgramActive)fn->glUseProgram(0);
+	detailProgramActive=false;
+	qDeleteAll(detailPrograms);detailPrograms.clear();
 	if ( !shader_ready )
 		return;
 
@@ -469,6 +473,11 @@ QString Renderer::setupProgram( Shape * mesh, const QString & hint )
 {
 	PropertyList props;
 	mesh->activeProperties( props );
+	if(mesh->scene->options & Scene::Unshaded) {
+		// Keep the normal shader hint so switching the preview mode off can
+		// resume the shader path without reloading the mesh.
+		stopProgram();setupFixedFunction(mesh,props);return hint;
+	}
 
 	if ( !shader_ready || hint.isNull()
 		 || (mesh->scene->options & Scene::DisableShaders)
@@ -503,11 +512,43 @@ QString Renderer::setupProgram( Shape * mesh, const QString & hint )
 
 void Renderer::stopProgram()
 {
-	if ( shader_ready ) {
+	if ( shader_ready || detailProgramActive ) {
 		fn->glUseProgram( 0 );
 	}
+	detailProgramActive=false;
 
 	resetTextureUnits();
+}
+
+void Renderer::setupDetailBrightness(const QVector<int> & textureStages, float brightness)
+{
+	// Fixed-function RGB_SCALE accepts only 1, 2 or 4. A fragment-only
+	// program keeps fixed-function vertex lighting/UV transforms and adjusts
+	// just the detail stage, without consuming another texture unit.
+	QByteArray key;for(int slot:textureStages)key.append(char(slot));
+	auto program=detailPrograms.value(key);
+	if(!program) {
+		program=new QOpenGLShaderProgram(this);QByteArray source="#version 120\nuniform float detailBrightness;\n";
+		for(int i=0;i<textureStages.size();++i)source+="uniform sampler2D stage"+QByteArray::number(i)+";\n";
+		source+="void main() { vec4 c=gl_Color;\n";
+		for(int i=0;i<textureStages.size();++i) {
+			auto n=QByteArray::number(i);source+="{ vec4 t=texture2D(stage"+n+",gl_TexCoord["+n+"].st);\n";
+			if(textureStages[i]>=6)source+="c.rgb=mix(c.rgb,t.rgb,t.a);\n";
+			else if(textureStages[i]==4)source+="c.rgb=clamp(c.rgb+t.rgb,0.0,1.0);\n";
+			else {
+				source+=textureStages[i]==2?"c.rgb=clamp(c.rgb*t.rgb*detailBrightness,0.0,1.0);\n":"c.rgb=clamp(c.rgb*t.rgb,0.0,1.0);\n";
+				source+="c.a*=t.a;\n";
+			}
+			source+="}\n";
+		}
+		source+="gl_FragColor=c; }\n";
+		if(!program->addShaderFromSourceCode(QOpenGLShader::Fragment,source) || !program->link())qWarning()<<"Detail brightness preview:"<<program->log();
+		detailPrograms.insert(key,program);
+	}
+	if(program->isLinked() && program->bind()) {
+		detailProgramActive=true;program->setUniformValue("detailBrightness",brightness);
+		for(int i=0;i<textureStages.size();++i)program->setUniformValue(("stage"+QByteArray::number(i)).constData(),i);
+	}
 }
 
 void Renderer::Program::uni1f( UniformType var, float x )
@@ -1123,14 +1164,49 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 
 	// setup texturing
 
-	if ( !(mesh->scene->options & Scene::DoTexturing) )
-		return;
+	if(mesh->scene->options & Scene::Unshaded) {
+		glDisable(GL_LIGHTING);glDisable(GL_COLOR_MATERIAL);glDisable(GL_FOG);
+		Color4 color(1,1,1,1);
+		// Read the material itself: GL_COLOR_MATERIAL can overwrite OpenGL's
+		// diffuse state with the last vertex color, including its alpha.
+		if(auto material=props.get<MaterialProperty>())color=material->diffuseColor();
+		else if(mesh->bslsp)color[3]=mesh->bslsp->getAlpha();
+		else if(mesh->bsesp)color[3]=mesh->bsesp->getAlpha();
+		bool hasBaseTexture=false;
+		if(auto texture=props.get<TexturingProperty>())hasBaseTexture=texture->hasTexture(0);
+		else if(auto texture=props.get<TextureProperty>())hasBaseTexture=texture->hasTexture();
+		else if(auto texture=props.get<BSShaderLightingProperty>())hasBaseTexture=!texture->fileName(0).isEmpty();
+		if(hasBaseTexture && (mesh->scene->options & Scene::DoTexturing))
+			color=Color4(1,1,1,color.alpha());
+		// Only ambient/diffuse vertex colors drive opacity in the normal path.
+		// Ignored or emissive vertex colors must not mask alpha-tested geometry.
+		auto vertexColor=props.get<VertexColorProperty>();
+		bool useVertexAlpha=!vertexColor || vertexColor->usesVertexAlpha();
+		auto alpha=props.get<AlphaProperty>();
+		// Legacy cutout materials often store unused zero vertex alpha. Unless
+		// vertex opacity is explicitly requested, test texture/material alpha.
+		if(!vertexColor && !mesh->bssp && alpha && alpha->test() && !alpha->blend())useVertexAlpha=false;
+		if(useVertexAlpha && glIsEnabled(GL_COLOR_ARRAY) && !mesh->transColors.isEmpty()) {
+			mesh->unshadedColors.resize(mesh->transColors.size());
+			for(int i=0;i<mesh->transColors.size();++i)
+				mesh->unshadedColors[i]=Color4(color[0],color[1],color[2],mesh->transColors[i].alpha());
+			glColorPointer(4,GL_FLOAT,0,mesh->unshadedColors.constData());
+		} else {
+			glDisableClientState(GL_COLOR_ARRAY);
+			glColor(color);
+		}
+	}
+	// Use the same texture stages, UV sets and compositing in both modes.
+	if(!(mesh->scene->options & Scene::DoTexturing))return;
 
 	if ( TexturingProperty * texprop = props.get<TexturingProperty>() ) {
 		// standard multi texturing property
 		int stage = 0;
+		const bool adjustDetail=mesh->scene->detailBrightness!=1.0f && mesh->scene->detailBrightness!=2.0f && texprop->hasTexture(2);
+		QVector<int> textureStages;
 
 		if ( texprop->bind( 1, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<1;
 			// dark
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1151,6 +1227,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 0, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<0;
 			// base
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1171,6 +1248,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 2, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<2;
 			// detail
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1187,10 +1265,11 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 			glTexEnvi( GL_TEXTURE_ENV, GL_SOURCE1_ALPHA, GL_TEXTURE );
 			glTexEnvi( GL_TEXTURE_ENV, GL_OPERAND1_ALPHA, GL_SRC_ALPHA );
 
-			glTexEnvf( GL_TEXTURE_ENV, GL_RGB_SCALE, 2.0 );
+			glTexEnvf( GL_TEXTURE_ENV, GL_RGB_SCALE, mesh->scene->detailBrightness==1.0f ? 1.0f : 2.0f );
 		}
 
 		if ( texprop->bind( 6, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<6;
 			// decal 0
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1211,6 +1290,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 7, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<7;
 			// decal 1
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1231,6 +1311,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 8, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<8;
 			// decal 2
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1251,6 +1332,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 9, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<9;
 			// decal 3
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1271,6 +1353,7 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 		}
 
 		if ( texprop->bind( 4, mesh->coords, stage ) ) {
+			if(adjustDetail)textureStages<<4;
 			// glow
 			stage++;
 			glTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE );
@@ -1287,6 +1370,8 @@ void Renderer::setupFixedFunction( Shape * mesh, const PropertyList & props )
 
 			glTexEnvf( GL_TEXTURE_ENV, GL_RGB_SCALE, 1.0 );
 		}
+		if(adjustDetail && textureStages.contains(2))
+			setupDetailBrightness(textureStages,mesh->scene->detailBrightness);
 	} else if ( TextureProperty * texprop = props.get<TextureProperty>() ) {
 		// old single texture property
 		texprop->bind( mesh->coords );

@@ -30,9 +30,19 @@ static QByteArray bytes( NifModel & model )
 #include "nimesh_checks.h"
 #include "gizmo_checks.h"
 #include "vertex_checks.h"
+#include "face_material_checks.h"
 #include "physx_inspect.h"
+#include "portal_inspect.h"
+#include "room_checks.h"
+#include "portal_checks.h"
 #include "physx_checks.h"
+#include "physx_group_checks.h"
 #include "uv_checks.h"
+#include "editor_features.h"
+#include "workspace_checks.h"
+#include "viewport_resize_checks.h"
+#include "lighting_checks.h"
+#include "color_hex_checks.h"
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -43,11 +53,43 @@ int main( int argc, char ** argv )
 	QApplication app(argc, argv);
 	app.setOrganizationName("NifSkopeTests");
 	app.setApplicationName("DocumentUndo");
+	// Keep test preferences writable and isolated from installed application settings.
+	QTemporaryDir testPreferences;
+	check(testPreferences.isValid(),"create isolated test preferences");
+	QSettings::setDefaultFormat(QSettings::IniFormat);
+	QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,testPreferences.path());
+	QSettings::setPath(QSettings::IniFormat,QSettings::SystemScope,testPreferences.path());
+	QSettings().setValue("GLView/Unshaded",false);
+	QSettings().setValue("GLView/ClampDetailBrightness",false);
+	QSettings().setValue("GLView/DetailBrightness",200);
 	check(argc > 1, "source directory supplied");
 	QDir::setCurrent(QString::fromLocal8Bit(argv[1]));
 	check(NifModel::loadXML(), "load NIF schema");
 	qRegisterMetaType<NifValue>();
 	QMetaType::registerComparators<NifValue>();
+	if(argc==3 && QByteArray(argv[2])=="--color-hex"){colorHexChecks();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--portals"){portalEditingChecks();realPortalEditingChecks();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--rooms"){roomTests();realRoomTests();return 0;}
+	if(argc==4 && QByteArray(argv[2])=="--portal-inspect")return inspectPortals(QString::fromLocal8Bit(argv[3]));
+	if(argc==3 && QByteArray(argv[2])=="--editor-features"){VertexEditorTest::numericAndIsolation();UVEditorTest::synchronization();UVEditorTest::realSynchronization();materialEditorChecks();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--toolbar-ui"){VertexEditorTest::toolbarAndContext();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--uv-ui"){UVEditorTest::cubeProjection();UVEditorTest::textureChannels();UVEditorTest::run();UVEditorTest::cage();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--controls-ui"){VertexEditorTest::viewportControls();VertexEditorTest::axisSnapping();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--vertex-ui"){VertexEditorTest::run();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--face-ui"){VertexEditorTest::faces();VertexEditorTest::editModes();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--face-check"){faceMaterialChecks();editingStorageChecks();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--light-falloff"){LightingPreviewTest::falloff();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--light-indicators"){LightingPreviewTest::indicators();return 0;}
+	if(argc==3 && QByteArray(argv[2])=="--lighting-check") {
+		LightingPreviewTest::run();return 0;
+	}
+	if(argc==4 && QByteArray(argv[2])=="--alpha-inspect") {
+		LightingPreviewTest::inspect(QString::fromLocal8Bit(argv[3]));return 0;
+	}
+	if(argc==4 && QByteArray(argv[2])=="--alpha-check") {
+		LightingPreviewTest::realAlpha(QString::fromLocal8Bit(argv[3]));return 0;
+	}
+	if(argc==5 && QByteArray(argv[2])=="--physx-groups"){groupedCollisionChecks(QString::fromLocal8Bit(argv[3]),QString::fromLocal8Bit(argv[4]));return 0;}
 	if(argc==5 && QByteArray(argv[2])=="--physx-check") {
 		checkPhysx(QString::fromLocal8Bit(argv[3]),QString::fromLocal8Bit(argv[4]));return 0;
 	}
@@ -234,6 +276,10 @@ int main( int argc, char ** argv )
 		VertexEditorTest::run();
 		PhysXCollisionTest::run();
 		UVEditorTest::run();
+		WorkspaceTest::run();
+		WorkspaceTest::drops();
+		ViewportResizeTest::run();
+		LightingPreviewTest::run();
 	}
 	return 0;
 }

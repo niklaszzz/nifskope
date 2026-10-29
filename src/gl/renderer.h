@@ -52,6 +52,7 @@ class PropertyList;
 
 class QOpenGLContext;
 class QOpenGLFunctions;
+class QOpenGLShaderProgram;
 
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
@@ -86,6 +87,13 @@ public:
 	QString setupProgram( Shape *, const QString & hint = {} );
 	//! Stop shader program
 	void stopProgram();
+
+private:
+	void setupDetailBrightness(const QVector<int> & textureStages, float brightness);
+	QHash<QByteArray,QOpenGLShaderProgram *> detailPrograms;
+	bool detailProgramActive = false;
+
+public:
 
 	typedef enum
 	{

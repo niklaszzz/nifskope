@@ -1,4 +1,4 @@
-﻿/***** BEGIN LICENSE BLOCK *****
+/***** BEGIN LICENSE BLOCK *****
 
 BSD License
 
@@ -46,6 +46,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ui/widgets/floatslider.h"
 #include "ui/widgets/floatedit.h"
 #include "ui/widgets/lightingwidget.h"
+#include "ui/widgets/materialpanel.h"
+#include "ui/widgets/roompanel.h"
 #include "ui/widgets/nifview.h"
 #include "ui/widgets/refrbrowser.h"
 #include "ui/widgets/inspect.h"
@@ -71,6 +73,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QProgressBar>
 #include <QMessageBox>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -153,16 +156,14 @@ void NifSkope::initActions()
 	);
 
 	// Undo/Redo
-	undoAction = nif->undoStack->createUndoAction( this, tr( "&Undo" ) );
-	disconnect( undoAction, nullptr, nif->undoStack, nullptr );
-	connect( undoAction, &QAction::triggered, nif, &NifModel::undo );
+	undoAction = new QAction(tr("&Undo"),this);
+	connect(undoAction,&QAction::triggered,this,[this](){nif->undo();});
 	undoAction->setShortcut( QKeySequence::Undo );
 	undoAction->setObjectName( "aUndo" );
 	undoAction->setIcon( QIcon( ":btn/undo" ) );
 	allActions << undoAction;
-	redoAction = nif->undoStack->createRedoAction( this, tr( "&Redo" ) );
-	disconnect( redoAction, nullptr, nif->undoStack, nullptr );
-	connect( redoAction, &QAction::triggered, nif, &NifModel::redo );
+	redoAction = new QAction(tr("&Redo"),this);
+	connect(redoAction,&QAction::triggered,this,[this](){nif->redo();});
 	redoAction->setShortcut( QKeySequence::Redo );
 	redoAction->setObjectName( "aRedo" );
 	redoAction->setIcon( QIcon( ":btn/redo" ) );
@@ -245,9 +246,32 @@ void NifSkope::initActions()
 		return ag;
 	};
 
-	selectActions = agroup( { ui->aSelectObject, ui->aSelectVertex }, true );
+	 auto faceAction=new QAction(tr("Faces"),this);
+ faceAction->setObjectName("aSelectFace");faceAction->setCheckable(true);faceAction->setData(Scene::SelVertex);
+ faceAction->setToolTip(tr("Select triangles: click nearest face, drag for X-ray box selection. Shift adds; Ctrl toggles. Move transforms shared vertices. Delete removes selected triangles."));
+ ui->tRender->insertAction(ui->aViewTop,faceAction);ui->mRender->addAction(faceAction);
+ selectActions = agroup( { ui->aSelectObject, ui->aSelectVertex, faceAction }, true );
+ auto deleteFaces=new QAction(tr("Delete Selection"),this);deleteFaces->setObjectName("aDeleteFaces");
+ deleteFaces->setToolTip(tr("Delete selected faces, or selected vertices and their connected faces (Delete)."));
+ ui->tRender->insertAction(ui->aViewTop,deleteFaces);ui->mRender->addAction(deleteFaces);
+ connect(deleteFaces,&QAction::triggered,this,[this]{if(ogl->faceSelection)ogl->deleteSelectedFaces();else ogl->deleteSelectedVertices();});
+ auto xray=new QAction(tr("X-Ray Selection\tShift+X"),this);xray->setObjectName("aEditXRay");xray->setCheckable(true);xray->setChecked(true);
+ xray->setToolTip(tr("Shift+X: Show and select through geometry in vertex and face modes. Turn off to show and select only visible geometry."));
+ ui->mRender->addAction(xray);connect(xray,&QAction::toggled,ogl,&GLView::setEditXRay);
+ connect(ogl,&GLView::editXRayChanged,xray,&QAction::setChecked);
+ connect(ogl,&GLView::selectionModeCycled,this,[this,faceAction](int mode){
+  (mode==0?ui->aSelectObject:mode==1?ui->aSelectVertex:faceAction)->setChecked(true);
+ });
+  auto newMaterial=new QAction(tr("New Material"),this);newMaterial->setObjectName("aNewMaterial");
+ newMaterial->setToolTip(tr("Give the selected mesh a new default material. Existing texture settings are copied for independent editing."));
+ ui->tRender->insertAction(ui->aViewTop,newMaterial);ui->mRender->addAction(newMaterial);
+ connect(newMaterial,&QAction::triggered,this,[this]{auto spell=SpellBook::lookup("Mesh/New Material");if(spell)spell->castIfApplicable(nif,ogl->getScene()->currentBlock);});
+ auto uniqueMaterial=new QAction(tr("Make Material Unique"),this);uniqueMaterial->setObjectName("aMakeMaterialUnique");
+ uniqueMaterial->setToolTip(tr("Copy this mesh's material and texture properties, give the material a new numbered name, and keep the original mesh unchanged. Creates a material if none exists."));
+ ui->tRender->insertAction(ui->aViewTop,uniqueMaterial);ui->mRender->addAction(uniqueMaterial);
+ connect(uniqueMaterial,&QAction::triggered,this,[this]{auto spell=SpellBook::lookup("Mesh/Make Material Unique");if(spell)spell->castIfApplicable(nif,ogl->getScene()->currentBlock);});
 	connect( selectActions, &QActionGroup::triggered, this, [this](QAction * action) {
-		ogl->setEditSelectionMode(Scene::SelMode(action->data().toInt()));
+		if(action->objectName()=="aSelectFace")ogl->setFaceSelectionMode();else ogl->setEditSelectionMode(Scene::SelMode(action->data().toInt()));
 	} );
 	ui->aSelectVertex->setToolTip(tr("Edit the mesh selected in Object mode. LMB drag selects through the mesh; Shift adds, Ctrl toggles. Space+LMB pans; Alt+LMB orbits."));
 
@@ -256,7 +280,7 @@ void NifSkope::initActions()
 	const QStringList gizmoNames = { tr( "Select" ), tr( "Move" ), tr( "Rotate" ), tr( "Scale" ) };
 	const QStringList gizmoTips = {
 		tr( "Select blocks and orbit the camera" ),
-		tr( "Drag a colored arrow to move along a local axis. Escape cancels." ),
+		tr( "Drag an arrow to move along one local axis, or a square to move across two axes. Escape cancels. Works in Walk mode." ),
 		tr( "Drag a colored ring to rotate around a local axis. Escape cancels." ),
 		tr( "Drag the center handle to scale uniformly. Escape cancels." )
 	};
@@ -270,8 +294,10 @@ void NifSkope::initActions()
 		gizmoActions->addAction( action );
 		action->setChecked( i == 0 );
 	}
+	connect(ogl,&GLView::gizmoModeChanged,this,[gizmoActions](int mode){for(auto action:gizmoActions->actions())action->setChecked(action->data().toInt()==mode);});
 	ui->tRender->insertSeparator( ui->aViewTop );
-	ui->mRender->addMenu( tr("Transform") )->addActions( gizmoActions->actions() );
+	auto transformMenu=ui->mRender->addMenu(tr("Transform"));transformMenu->setObjectName("mTransformTools");transformMenu->addActions(gizmoActions->actions());
+	transformMenu->addSeparator();auto numeric=new QAction(tr("Numeric Transform... (N)"),this);numeric->setObjectName("aNumericTransform");transformMenu->addAction(numeric);connect(numeric,&QAction::triggered,ogl,&GLView::showNumericTransform);
 	connect( gizmoActions, &QActionGroup::triggered, this, [this]( QAction * action ) {
 		if ( action->data().toInt() != GLView::GizmoSelect && ogl->getScene()->selMode != Scene::SelVertex ) ui->aSelectObject->trigger();
 		ogl->setGizmoMode( GLView::GizmoMode( action->data().toInt() ) );
@@ -279,14 +305,21 @@ void NifSkope::initActions()
 	auto snapVertices=new QAction(tr("Snap Vertices"),this);
 	snapVertices->setObjectName("aSnapVertices");
 	snapVertices->setCheckable(true);
-	snapVertices->setToolTip(tr("During a vertex Move drag, snap the selection's nearest anchor vertex to another vertex within 14 pixels of the pointer."));
+	snapVertices->setToolTip(tr("During a vertex Move drag, snap the selection's nearest anchor vertex to the active-axis coordinates of another vertex within 14 pixels of the pointer. Other axes stay fixed."));
 	ui->tRender->insertAction(ui->aViewTop,snapVertices);
 	ui->mRender->addAction(snapVertices);
 	connect(snapVertices,&QAction::toggled,ogl,&GLView::setVertexSnap);
+	auto meshPivot=new QAction(tr("Mesh Center Pivot"),this);
+	meshPivot->setObjectName("aMeshCenterPivot");meshPivot->setCheckable(true);
+	meshPivot->setToolTip(tr("Temporarily place the object gizmo at the mesh's bounding-box center. Rotate and scale around that center. Turn off to use the stored origin. Vertex mode uses the selected vertices' center."));
+	ui->tRender->insertAction(ui->aViewTop,meshPivot);ui->mRender->addAction(meshPivot);
+	connect(meshPivot,&QAction::toggled,ogl,&GLView::setMeshCenterPivot);
 	auto uvEditor=new QAction(tr("UV Editor"),this);uvEditor->setObjectName("aUVEditor");
 	uvEditor->setToolTip(tr("Open the UV editor for the mesh selected in the 3D view or Block List."));
 	ui->tRender->insertAction(ui->aViewTop,uvEditor);ui->mRender->addAction(uvEditor);
-	connect(uvEditor,&QAction::triggered,this,[this](){UVWidget::createEditor(nif,ogl->getScene()->currentBlock);});
+	 connect(uvEditor,&QAction::triggered,this,[this](){
+  UVWidget::createEditor(nif,ogl->getScene()->currentBlock,this);
+ });
 	auto rebuildCollision=new QAction(tr("Rebuild Collision"),this);
 	rebuildCollision->setObjectName("aRebuildCollision");
 	rebuildCollision->setToolTip(tr("Update static PhysX triangle collision from the matching source meshes. Edit the source meshes first, then rebuild and save. This is undoable."));
@@ -295,6 +328,7 @@ void NifSkope::initActions()
 	auto updateCollisionAction=[this,rebuildCollision](){rebuildCollision->setEnabled(PhysXCollision::hasCollision(nif));};
 	connect(nif,&NifModel::modelReset,this,updateCollisionAction);
 	connect(nif,&NifModel::linksChanged,this,updateCollisionAction);
+	connect(this,&NifSkope::activeDocumentChanged,this,updateCollisionAction);
 	updateCollisionAction();
 	connect(rebuildCollision,&QAction::triggered,this,[this](){
 		QVector<PhysXCollision::Mesh> meshes;QString error;
@@ -312,9 +346,68 @@ void NifSkope::initActions()
 		if(!ok){QMessageBox::warning(this,tr("Rebuild Collision"),error);return;}
 		settings.setValue("PhysX/Cooking DLL",dll);
 		if(!ui->aShowCollision->isChecked())ui->aShowCollision->trigger();
-		statusBar()->showMessage(tr("Rebuilt %1 collision meshes. Save the NIF to keep the changes. Ctrl+Z undoes the rebuild.").arg(count),15000);
+		int sourceCount=0;QStringList sourceGroups;
+		for(const auto & mesh:meshes){sourceCount+=mesh.sourceMeshes.size();if(mesh.sourceMeshes.size()>1)sourceGroups<<tr("%1 (%2 meshes)").arg(mesh.name).arg(mesh.sourceMeshes.size());}
+		QString groups=sourceGroups.isEmpty()?QString():tr(" Groups: %1.").arg(sourceGroups.join(", "));
+		statusBar()->showMessage(tr("Rebuilt %1 colliders from %2 source meshes in %3.%4 Save this NIF to keep the changes. Ctrl+Z undoes the rebuild.").arg(count).arg(sourceCount).arg(QFileInfo(currentFile).fileName(),groups),20000);
 	});
 
+    // Keep the underlying actions for shortcuts/menus; the toolbar exposes
+    // cycling mode buttons and flyouts instead of a row of individual actions.
+    auto editorIcon=[](const char * name){return QIcon(QString(":/edit/%1").arg(name));};
+    ui->aSelectObject->setIcon(editorIcon("object"));ui->aSelectVertex->setIcon(editorIcon("vertex"));faceAction->setIcon(editorIcon("face"));
+    const char * toolIcons[]={"select","move","rotate","scale"};
+    for(int i=0;i<gizmoActions->actions().size();++i)gizmoActions->actions()[i]->setIcon(editorIcon(toolIcons[i]));
+    deleteFaces->setIcon(editorIcon("delete"));snapVertices->setIcon(editorIcon("snap"));meshPivot->setIcon(editorIcon("pivot"));xray->setIcon(editorIcon("xray"));
+    newMaterial->setIcon(editorIcon("new-material"));uniqueMaterial->setIcon(editorIcon("unique-material"));
+    uvEditor->setIcon(editorIcon("uv-editor"));rebuildCollision->setIcon(editorIcon("rebuild-collision"));
+    gizmoActions->actions()[0]->setToolTip(tr("Select tool (V). Hide the transform gizmo."));
+    gizmoActions->actions()[1]->setToolTip(tr("Move tool (W). Drag an axis or plane handle; Escape cancels."));
+    gizmoActions->actions()[2]->setToolTip(tr("Rotate tool (E). Drag an axis ring; Escape cancels."));
+    gizmoActions->actions()[3]->setToolTip(tr("Scale tool (R). Drag the center handle; Escape cancels."));
+    for(auto action:ui->tRender->actions()){if(action==ui->aViewTop)break;ui->tRender->removeAction(action);}
+    auto selectionMenu=new QMenu(tr("Selection Mode"),this);selectionMenu->setObjectName("mSelectionModes");selectionMenu->addActions(selectActions->actions());
+    ui->mRender->removeAction(ui->aSelectObject);ui->mRender->removeAction(ui->aSelectVertex);ui->mRender->removeAction(faceAction);
+    ui->mRender->insertMenu(transformMenu->menuAction(),selectionMenu);
+    auto meshTools=new QMenu(tr("Mesh Tools"),this);meshTools->setObjectName("mMeshTools");
+        auto worldAxesAction=new QAction(tr("World Axes"),this);worldAxesAction->setObjectName("aWorldAxes");worldAxesAction->setCheckable(true);connect(worldAxesAction,&QAction::toggled,ogl,&GLView::setWorldAxes);meshTools->addAction(worldAxesAction);
+    auto isolate=new QAction(tr("Isolate Selected Mesh (Shift+H)"),this);isolate->setObjectName("aIsolateSelection");isolate->setCheckable(true);connect(isolate,&QAction::toggled,ogl,&GLView::setIsolateSelection);connect(ogl,&GLView::isolationChanged,this,[isolate](bool enabled){QSignalBlocker blocker(isolate);isolate->setChecked(enabled);});meshTools->addAction(isolate);
+    meshTools->addAction(snapVertices);meshTools->addAction(meshPivot);meshTools->addAction(xray);meshTools->addSeparator();meshTools->addAction(deleteFaces);
+    auto materials=new QMenu(tr("Materials"),this);materials->setObjectName("mMaterials");materials->addAction(newMaterial);materials->addAction(uniqueMaterial);
+    auto materialEditor=new QAction(tr("Material Editor..."),this);materialEditor->setObjectName("aMaterialEditor");materials->addAction(materialEditor);connect(materialEditor,&QAction::triggered,this,[this]{if(auto dock=findChild<QDockWidget *>("MaterialEditorDock")){dock->show();dock->raise();}});
+    for(auto action:{deleteFaces,snapVertices,meshPivot,xray,newMaterial,uniqueMaterial})ui->mRender->removeAction(action);
+    ui->mRender->addMenu(meshTools);ui->mRender->addMenu(materials);
+    auto toolButton=[this](const QString & name){
+        auto button=new QToolButton(ui->tRender);button->setObjectName(name);button->setProperty("compactTool",true);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);button->setFocusPolicy(Qt::NoFocus);button->setIconSize(ui->tRender->iconSize());
+        connect(ui->tRender,&QToolBar::iconSizeChanged,button,&QToolButton::setIconSize);
+        auto action=ui->tRender->insertWidget(ui->aViewTop,button);action->setObjectName(name+"Action");return button;
+    };
+    auto cyclingButton=[this,toolButton](const QString & name,const QString & label,QActionGroup * group,QMenu * menu,const QString & shortcut){
+        auto button=toolButton(name);button->setMenu(menu);button->setPopupMode(QToolButton::MenuButtonPopup);
+        button->setProperty("cyclingTool",true);
+        // Keep a dedicated arrow area, even when changing icons or hover state
+        // causes the stylesheet to recalculate the button's size hint.
+        auto sizeButton=[button](const QSize & size){button->setFixedSize(size.width()+24,size.height()+4);};
+        connect(ui->tRender,&QToolBar::iconSizeChanged,button,sizeButton);
+        sizeButton(ui->tRender->iconSize());
+        auto sync=[button,group,label,shortcut]{
+            for(auto action:group->actions())if(action->isChecked()){
+                button->setIcon(action->icon());button->setText(action->text());button->setAccessibleName(label+": "+action->text());
+                button->setToolTip(tr("%1: %2\nClick to cycle; arrow opens choices. %3").arg(label,action->text(),shortcut));break;
+            }
+        };
+        for(auto action:group->actions())connect(action,&QAction::changed,button,sync);
+        connect(button,&QToolButton::clicked,this,[group]{
+            auto actions=group->actions();int active=actions.indexOf(group->checkedAction());actions[(active+1)%actions.size()]->trigger();
+        });
+        sync();return button;
+    };
+    cyclingButton("selectionModeButton",tr("Selection mode"),selectActions,selectionMenu,tr("Tab cycles modes."));
+    cyclingButton("transformToolButton",tr("Transform tool"),gizmoActions,transformMenu,tr("V Select | W Move | E Rotate | R Scale"));
+    auto meshButton=toolButton("meshToolsButton");meshButton->setMenu(meshTools);meshButton->setPopupMode(QToolButton::InstantPopup);meshButton->setIcon(editorIcon("mesh-tools"));meshButton->setText(tr("Mesh Tools"));meshButton->setToolTip(tr("Mesh Tools: delete selection, vertex snapping, center pivot and X-ray selection."));
+    auto materialButton=toolButton("materialsButton");materialButton->setMenu(materials);materialButton->setPopupMode(QToolButton::InstantPopup);materialButton->setIcon(editorIcon("materials"));materialButton->setText(tr("Materials"));materialButton->setToolTip(tr("New Material / Make Material Unique"));
+    ui->tRender->insertAction(ui->aViewTop,uvEditor);ui->tRender->insertAction(ui->aViewTop,rebuildCollision);ui->tRender->insertSeparator(ui->aViewTop);
 	showActions = agroup( { ui->aShowAxes, ui->aShowGrid, ui->aShowNodes, ui->aShowCollision,
 						  ui->aShowConstraints, ui->aShowMarkers, ui->aShowHidden, ui->aDoSkinning
 	}, false );
@@ -432,7 +525,7 @@ void NifSkope::initActions()
 		ogl->setOrientation( GLView::ViewDefault, false );
 	} );
 
-	connect( graphicsView, &GLGraphicsView::customContextMenuRequested, this, &NifSkope::contextMenu );
+	connect( ogl, &GLView::viewportContextMenuRequested, this, &NifSkope::contextMenu );
 
 	// Update Inspector widget with current index
 	connect( tree, &NifTreeView::sigCurrentIndexChanged, inspect, &InspectView::updateSelection );
@@ -468,6 +561,14 @@ void NifSkope::initDockWidgets()
 	dInsp->setWidget( inspect );
 
 	connect( dList->toggleViewAction(), &QAction::triggered, tree, &NifTreeView::clearRootIndex );
+ auto materialDock=new QDockWidget(tr("Materials"),this);materialDock->setObjectName("MaterialEditorDock");auto panel=new MaterialPanel(materialDock);materialDock->setWidget(panel);addDockWidget(Qt::RightDockWidgetArea,materialDock);materialDock->hide();
+ auto updateMaterialTarget=[this,panel]{panel->setTarget(nif,ogl->getScene()->currentBlock);};
+ connect(ogl,&GLView::currentBlockChanged,panel,updateMaterialTarget);connect(this,&NifSkope::activeDocumentChanged,panel,updateMaterialTarget);connect(ogl,&GLView::clicked,panel,updateMaterialTarget);updateMaterialTarget();
+ auto roomDock=new QDockWidget(tr("Rooms"),this);roomDock->setObjectName("RoomEditorDock");auto roomPanel=new RoomPanel(roomDock);roomDock->setWidget(roomPanel);addDockWidget(Qt::RightDockWidgetArea,roomDock);roomDock->hide();
+ auto updateRoomTarget=[this,roomPanel]{roomPanel->setTarget(nif,ogl->getScene()->currentBlock);roomPanel->setMeshSelection(nif,ogl->getScene()->selMode==Scene::SelVertex?QModelIndex(ogl->editMesh):QModelIndex(),ogl->getScene()->selMode==Scene::SelVertex?ogl->selectedVertices:QSet<int>());};
+ connect(ogl,&GLView::currentBlockChanged,roomPanel,updateRoomTarget);connect(ogl,&GLView::clicked,roomPanel,updateRoomTarget);connect(this,&NifSkope::activeDocumentChanged,roomPanel,updateRoomTarget);connect(roomDock,&QDockWidget::visibilityChanged,roomPanel,[updateRoomTarget](bool visible){if(visible)updateRoomTarget();});connect(roomPanel,&RoomPanel::overlayChanged,ogl,&GLView::setRoomOverlay);updateRoomTarget();
+ connect(ogl,&GLView::editSelectionChanged,roomPanel,updateRoomTarget,Qt::QueuedConnection);connect(roomPanel,&RoomPanel::portalPreviewChanged,ogl,&GLView::setPortalPreview);connect(roomPanel,&RoomPanel::portalHighlightChanged,ogl,&GLView::setPortalHighlight);
+ auto roomsAction=new QAction(tr("Rooms..."),this);roomsAction->setObjectName("aRoomEditor");ui->mRender->addAction(roomsAction);connect(roomsAction,&QAction::triggered,roomDock,[roomDock,updateRoomTarget]{roomDock->show();roomDock->raise();updateRoomTarget();});
 
 }
 
@@ -550,7 +651,7 @@ void NifSkope::initMenu()
 
 		if ( child->defaultAction() == ui->aLightMenu ) {
 			setFlyout( child, mLight );
-		} else {
+		} else if(child->objectName().isEmpty()) {
 			child->setObjectName( "btnRender" );
 		}
 	}
@@ -589,7 +690,7 @@ void NifSkope::initToolBars()
 {
 	// Disable without NIF loaded
 	ui->tRender->setEnabled( false );
-	ui->tRender->setContextMenuPolicy( Qt::ActionsContextMenu );
+	ui->tRender->setContextMenuPolicy( Qt::PreventContextMenu );
 
 	// Status Bar
 	ui->statusbar->setContentsMargins( 0, 0, 0, 0 );
@@ -704,7 +805,6 @@ void NifSkope::initToolBars()
 
 	connect( lodSlider, &QSlider::valueChanged, ogl->getScene(), &Scene::updateLodLevel );
 	connect( lodSlider, &QSlider::valueChanged, ogl, &GLView::updateGL );
-	connect( nif, &NifModel::lodSliderChanged, [tLOD]( bool enabled ) { tLOD->setEnabled( enabled ); tLOD->setVisible( enabled ); } );
 }
 
 void NifSkope::initConnections()
@@ -900,8 +1000,10 @@ void NifSkope::onLoadComplete( bool success, QString & fname )
 
 	// Mark window as unmodified
 	setWindowModified( false );
+	if(!documents.isEmpty())documents[activeDocument].path=currentFile;
 	nif->resetUndoHistory();
 	indexStack->clear();
+	updateWorkspaceUi();refreshReferences();
 
 	// Center the model on load
 	ogl->center();
@@ -940,11 +1042,13 @@ void NifSkope::onSaveComplete( bool success, QString & fname )
 		// Mark window as unmodified
 		nif->undoStack->setClean();
 		setWindowModified( false );
+		updateWorkspaceUi();
 	}
 }
 
 bool NifSkope::saveConfirm()
 {
+	if(documents.size()>1)return confirmWorkspace();
 	nif->flushUndoHistory();
 	if ( !cfg.suppressSaveConfirm && (isWindowModified() || !nif->undoStack->isClean()) ) {
 		QMessageBox::StandardButton response;
@@ -955,7 +1059,7 @@ bool NifSkope::saveConfirm()
 
 		if ( response == QMessageBox::Yes ) {
 			saveAsDlg();
-			return true;
+			return nif->undoStack->isClean() && !isWindowModified();
 		} else if ( response == QMessageBox::No ) {
 			return true;
 		} else if ( response == QMessageBox::Cancel ) {
@@ -1279,23 +1383,6 @@ void NifSkope::setTheme( nstheme::WindowTheme t )
 	loadTheme();
 }
 
-void NifSkope::resizeDone()
-{
-	isResizing = false;
-
-	// Unhide GLView, update GLGraphicsView
-	ogl->show();
-	graphicsScene->setSceneRect( graphicsView->rect() );
-	graphicsView->fitInView( graphicsScene->sceneRect() );
-
-	ogl->setUpdatesEnabled( true );
-	ogl->setDisabled( false );
-	ogl->getScene()->animate = true;
-	ogl->update();
-	ogl->resizeGL( centralWidget()->width(), centralWidget()->height() );
-}
-
-
 bool NifSkope::eventFilter( QObject * o, QEvent * e )
 {
 	// TODO: This doesn't seem to be doing anything extra
@@ -1326,53 +1413,7 @@ bool NifSkope::eventFilter( QObject * o, QEvent * e )
 		}
 	}
 
-	// Filter GLGraphicsView
-	auto obj = qobject_cast<GLGraphicsView *>(o);
-	if ( !obj || obj != graphicsView )
-		return QMainWindow::eventFilter( o, e );
-
-	// Turn off animation
-	// Grab framebuffer
-	// Begin resize timer
-	// Block all Resize Events to GLView
-	if ( e->type() == QEvent::Resize ) {
-		// Hide GLView
-		ogl->hide();
-
-		if ( !isResizing  && !resizeTimer->isActive() ) {
-			ogl->getScene()->animate = false;
-			ogl->updateGL();
-
-			if ( viewBuffer.isNull() ) {
-				// Init initial buffer with solid color
-				//	Otherwise becomes random colors on release builds
-				viewBuffer = QImage( 10, 10, QImage::Format_ARGB32 );
-				viewBuffer.fill( ogl->clearColor() );
-			} else {
-				viewBuffer = ogl->grabFrameBuffer();
-			}
-
-			ogl->setUpdatesEnabled( false );
-			ogl->setDisabled( true );
-
-			isResizing = true;
-		}
-
-		resizeTimer->start( 300 );
-
-		return true;
-	}
-
-	// Paint stored framebuffer over GLGraphicsView while resizing
-	if ( !viewBuffer.isNull() && isResizing && e->type() == QEvent::Paint ) {
-		QPainter painter;
-		painter.begin( graphicsView );
-		painter.drawImage( QRect( 0, 0, painter.device()->width(), painter.device()->height() ), viewBuffer );
-		painter.end();
-
-		return true;
-	}
-
+	// QGraphicsView and QGLWidget must receive their normal resize events.
 	return QMainWindow::eventFilter( o, e );
 }
 
@@ -1397,9 +1438,9 @@ void NifSkope::contextMenu( const QPoint & pos )
 	} else if ( sender() == header ) {
 		idx = header->indexAt( pos );
 		p = header->mapToGlobal( pos );
-	} else if ( sender() == graphicsView ) {
-		idx = ogl->indexAt( pos );
-		p = graphicsView->mapToGlobal( pos );
+	} else if ( sender() == graphicsView || sender() == ogl ) {
+		idx = ogl->getScene()->selMode==Scene::SelVertex?QModelIndex(ogl->getScene()->currentBlock):ogl->indexAt(pos);
+		p = ogl->mapToGlobal( pos );
 	} else {
 		return;
 	}
@@ -1554,4 +1595,23 @@ void NifSkope::on_mTheme_triggered( QAction * action )
 	auto newTheme = WindowTheme( action->data().toInt() );
 
 	setTheme( newTheme );
+}
+
+void NifSkope::synchronizeUVEditor(UVWidget * editor)
+{
+  if(!editor || editor->document()!=nif)return;
+  syncedUVEditor=editor;
+  if(editor->property("uvSelectionBound").toBool()){if(ogl->getScene()->selMode==Scene::SelVertex && editor->meshIndex()==ogl->editMesh)editor->setViewportSelection(ogl->selectedVertices,ogl->selectedFaces,ogl->faceSelection);return;}
+  editor->setProperty("uvSelectionBound",true);
+  auto fromViewport=[this,editor]{if(syncedUVEditor!=editor)return;auto target=ogl->getScene()->selMode==Scene::SelVertex?QModelIndex(ogl->editMesh):QModelIndex(ogl->getScene()->currentBlock);if(!editor->followMesh(nif,target))return;if(ogl->getScene()->selMode==Scene::SelVertex)editor->setViewportSelection(ogl->selectedVertices,ogl->selectedFaces,ogl->faceSelection);};
+  connect(ogl,&GLView::editSelectionChanged,editor,fromViewport,Qt::QueuedConnection);
+connect(ogl,&GLView::currentBlockChanged,editor,fromViewport,Qt::QueuedConnection);connect(ogl,&GLView::clicked,editor,fromViewport,Qt::QueuedConnection);
+  connect(editor,&UVWidget::selectionChanged,this,[this,editor]{
+   if(syncedUVEditor!=editor || editor->document()!=nif || !editor->meshIndex().isValid())return;
+   if(ogl->getScene()->selMode!=Scene::SelVertex){ogl->setCurrentIndex(editor->meshIndex());ui->aSelectVertex->trigger();}
+   if(ogl->editMesh!=editor->meshIndex())return;
+   if(ogl->faceSelection)ogl->selectedFaces=editor->selectedFaces();else ogl->selectedVertices=editor->selectedVertices();
+   ogl->refreshEditData();ogl->gizmoVisible=false;ogl->update();
+  });
+  fromViewport();
 }

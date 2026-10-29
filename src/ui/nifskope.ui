@@ -1382,7 +1382,7 @@ background: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0
   </action>
   <action name="aAboutNifSkope">
    <property name="text">
-    <string>About &amp;NifSkope</string>
+    <string>About &amp;MicroSkope</string>
    </property>
   </action>
   <action name="aAboutQt">

@@ -7,6 +7,7 @@
 
 class GLView;
 class QAction;
+class QCheckBox;
 
 namespace Ui {
 class LightingWidget;
@@ -25,6 +26,7 @@ public:
 
 private:
 	std::unique_ptr<Ui::LightingWidget> ui;
+	QCheckBox * unshaded = nullptr;
 
 	enum
 	{

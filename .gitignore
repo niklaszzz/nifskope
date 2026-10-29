@@ -1,6 +1,7 @@
 # Generated
 /build/Desktop_*/
 /build/qt-check/
+/build/face-check/
 .moc/
 .obj/
 .qrc/
@@ -74,3 +75,7 @@ vc100.pdb
 # OS
 [Tt]humbs.db
 *.DS_Store
+
+# Extracted local SDK documentation (research artifacts)
+/build/gamebryo-docs/
+/build/gamebryo-readable/

@@ -40,11 +40,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QFrame>
 #include <QLayout>
 #include <QLineEdit>
+#include <QRegularExpressionValidator>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QToolButton>
+#include <cmath>
 
 
 //! \file valueedit.cpp Value edit widget implementations
@@ -534,72 +536,69 @@ ColorEdit::ColorEdit( QWidget * parent ) : ValueEdit( parent )
 	lay->setSpacing( 0 );
 	setLayout( lay );
 
-	// Cast QDoubleSpinBox slot
-	auto dsbValueChanged = static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged);
-
-	lay->addWidget( new CenterLabel( "R" ), 1 );
-	lay->addWidget( r = new QDoubleSpinBox, 5 );
-	r->setDecimals( COLOR_DECIMALS );
-	r->setRange( 0, FLT_MAX );
-	r->setSingleStep( COLOR_STEP );
-	connect( r, dsbValueChanged, this, &ColorEdit::sltChanged );
-	lay->addWidget( new CenterLabel( "G" ), 1 );
-	lay->addWidget( g = new QDoubleSpinBox, 5 );
-	g->setDecimals( COLOR_DECIMALS );
-	g->setRange( 0, FLT_MAX );
-	g->setSingleStep( COLOR_STEP );
-	connect( g, dsbValueChanged, this, &ColorEdit::sltChanged );
-	lay->addWidget( new CenterLabel( "B" ), 1 );
-	lay->addWidget( b = new QDoubleSpinBox, 5 );
-	b->setDecimals( COLOR_DECIMALS );
-	b->setRange( 0, FLT_MAX );
-	b->setSingleStep( COLOR_STEP );
-	connect( b, dsbValueChanged, this, &ColorEdit::sltChanged );
-	lay->addWidget( al = new CenterLabel( "A" ), 1 );
-	lay->addWidget( a = new QDoubleSpinBox, 5 );
-	a->setDecimals( COLOR_DECIMALS );
-	a->setRange( 0, FLT_MAX );
-	a->setSingleStep( COLOR_STEP );
-	connect( a, dsbValueChanged, this, &ColorEdit::sltChanged );
-
+	hex = new QLineEdit(this);
+	hex->setObjectName("colorHex");
+	hex->setFrame(false);
+	lay->addWidget(hex);
+	connect(hex,&QLineEdit::textChanged,this,&ColorEdit::sltChanged);
 	setting = false;
-	setFocusProxy( r );
+	setFocusProxy(hex);
 }
 
 void ColorEdit::setColor4( const Color4 & v )
 {
 	setting = true;
-	r->setValue( v[0] );
-	g->setValue( v[1] );
-	b->setValue( v[2] );
-	a->setValue( v[3] ); a->setVisible( true ); al->setVisible( true );
+	original = v;
+	hasAlpha = true;
+	// Match the existing NIF display order: RRGGBBAA, rather than Qt's AARRGGBB.
+	originalHex = "#";
+	for(int i=0;i<4;++i)originalHex += QString("%1").arg(std::isfinite(v[i])?int(clamp01(v[i])*255):0,2,16,QChar('0'));
+	auto previousValidator=hex->validator();
+	hex->setValidator(new QRegularExpressionValidator(QRegularExpression("\\s*#?(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\\s*"),hex));
+	delete previousValidator;
+	hex->setToolTip(tr("Hex color: #RRGGBBAA. Paste #RRGGBB to keep the current alpha. Enter to apply; Escape to cancel."));
+	hex->setText(originalHex);
+	hex->selectAll();
 	setting = false;
 }
 
 void ColorEdit::setColor3( const Color3 & v )
 {
+	setColor4(Color4(v));
 	setting = true;
-	r->setValue( v[0] );
-	g->setValue( v[1] );
-	b->setValue( v[2] );
-	a->setValue( 1.0 ); a->setHidden( true ); al->setHidden( true );
+	hasAlpha = false;
+	originalHex.chop(2);
+	auto previousValidator=hex->validator();
+	hex->setValidator(new QRegularExpressionValidator(QRegularExpression("\\s*#?[0-9a-fA-F]{6}\\s*"),hex));
+	delete previousValidator;
+	hex->setToolTip(tr("Hex color: #RRGGBB (the # is optional). Enter to apply; Escape to cancel."));
+	hex->setText(originalHex);
+	hex->selectAll();
 	setting = false;
 }
 
 void ColorEdit::sltChanged()
 {
-	if ( !setting )
+	if ( !setting && hex->hasAcceptableInput() )
 		emit sigEdited();
 }
 
 Color4 ColorEdit::getColor4() const
 {
-	return Color4( r->value(), g->value(), b->value(), a->value() );
+	QString text=hex->text().trimmed();
+	if(!text.startsWith('#'))text.prepend('#');
+	// Avoid quantizing float/HDR colors merely by opening or copying their hex code.
+	if(!hex->hasAcceptableInput() || text.compare(originalHex,Qt::CaseInsensitive)==0
+	    || (hasAlpha && text.compare(originalHex.left(7),Qt::CaseInsensitive)==0))return original;
+	Color4 result=original;
+	for(int i=0;i<(hasAlpha && text.size()==9?4:3);++i)
+		result[i]=text.mid(1+i*2,2).toUInt(nullptr,16)/255.f;
+	return result;
 }
 
 Color3 ColorEdit::getColor3() const
 {
-	return Color3( r->value(), g->value(), b->value() );
+	return Color3(getColor4());
 }
 
 VectorEdit::VectorEdit( QWidget * parent ) : ValueEdit( parent )

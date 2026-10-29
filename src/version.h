@@ -33,6 +33,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef VERSION_H
 #define VERSION_H
 
+// Keep the existing settings location/schema when changing the product name.
+#define NIFSKOPE_SETTINGS_APP "NifSkope 2.0"
+#define NIFSKOPE_SETTINGS_VERSION "2.0.dev7"
+
 #include <QHash>
 #include <QList>
 #include <QString>

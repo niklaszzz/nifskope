@@ -474,6 +474,15 @@ Node * Node::findChild( const QString & str ) const
 
 bool Node::isHidden() const
 {
+	if(scene->isolatedRoot.isValid()) {
+		bool related=false;
+		for(const Node * node=this;node;node=node->parentNode())if(node->index()==scene->isolatedRoot){related=true;break;}
+		if(!related)for(const Node * node:scene->nodes.list())if(node->index()==scene->isolatedRoot){
+			for(;node;node=node->parentNode())if(node==this){related=true;break;}
+			break;
+		}
+		if(!related)return true;
+	}
 	if ( scene->options & Scene::ShowHidden )
 		return false;
 

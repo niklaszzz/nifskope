@@ -8,6 +8,8 @@ class NifModel;
 namespace PhysXCollision {
 struct Mesh {
 	QPersistentModelIndex source, data;
+	QVector<QPersistentModelIndex> sourceMeshes;
+	QVector<QMatrix4x4> sourceWorlds;
 	QString name;
 	QMatrix4x4 world;
 	QVector<Vector3> vertices;

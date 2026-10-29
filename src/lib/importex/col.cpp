@@ -1007,7 +1007,7 @@ void exportCol( const NifModel * nif, QFileInfo fileInfo )
 	QDomElement contributor = doc.createElement( "contributor" );
 	asset.appendChild( contributor );
 	contributor.appendChild( doc.createElement( "author" ) );
-	contributor.appendChild( textElement( "authoring_tool", QString( "NifSkope %1" ).arg( NIFSKOPE_VERSION ) ) );
+	contributor.appendChild( textElement( "authoring_tool", QString( "MicroSkope %1" ).arg( NIFSKOPE_VERSION ) ) );
 	contributor.appendChild( doc.createElement( "comments" ) );
 	asset.appendChild( dateElement( "created", QDateTime::currentDateTime() ) );
 	asset.appendChild( dateElement( "modified", QDateTime::currentDateTime() ) );
@@ -1051,4 +1051,3 @@ void exportCol( const NifModel * nif, QFileInfo fileInfo )
 	settings.endGroup(); // COLLADA
 	settings.endGroup(); // Import-Export
 }
-

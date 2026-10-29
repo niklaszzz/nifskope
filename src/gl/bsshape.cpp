@@ -472,7 +472,7 @@ void BSShape::drawShapes( NodeList * secondPass, bool presort )
 
 void BSShape::drawVerts() const
 {
-	if(scene->currentBlock!=iBlock && scene->currentBlock!=iData) return;
+	if(!Node::SELECTING || (scene->currentBlock!=iBlock && scene->currentBlock!=iData)) return;
 	glDisable( GL_LIGHTING );
 	glNormalColor();
 

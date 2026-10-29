@@ -63,4 +63,23 @@
         <file alias="collapse">icon/collapse.png</file>
         <file alias="expand">icon/expand.png</file>
     </qresource>
+    <qresource prefix="/edit">
+        <file alias="object">icon/editor/object.png</file>
+        <file alias="vertex">icon/editor/vertex.png</file>
+        <file alias="face">icon/editor/face.png</file>
+        <file alias="select">icon/editor/select.png</file>
+        <file alias="move">icon/editor/move.png</file>
+        <file alias="rotate">icon/editor/rotate.png</file>
+        <file alias="scale">icon/editor/scale.png</file>
+        <file alias="mesh-tools">icon/editor/mesh-tools.png</file>
+        <file alias="delete">icon/editor/delete.png</file>
+        <file alias="snap">icon/editor/snap.png</file>
+        <file alias="pivot">icon/editor/pivot.png</file>
+        <file alias="xray">icon/editor/xray.png</file>
+        <file alias="materials">icon/editor/materials.png</file>
+        <file alias="new-material">icon/editor/new-material.png</file>
+        <file alias="unique-material">icon/editor/unique-material.png</file>
+        <file alias="uv-editor">icon/editor/uv-editor.png</file>
+        <file alias="rebuild-collision">icon/editor/rebuild-collision.png</file>
+    </qresource>
 </RCC>

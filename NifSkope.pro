@@ -3,7 +3,7 @@
 ###############################
 
 TEMPLATE = app
-TARGET   = NifSkope
+TARGET   = MicroSkope
 
 QT += xml opengl network widgets
 
@@ -13,6 +13,7 @@ SOURCES += src/model/vertexedit.cpp src/glview_edit.cpp
 HEADERS += src/model/vertexedit.h
 SOURCES += src/model/uveditdata.cpp
 HEADERS += src/model/uveditdata.h
+SOURCES += src/nifskope_workspace.cpp src/glview_reference.cpp
 SOURCES += src/physx/physxcollision.cpp
 HEADERS += src/physx/physxcollision.h
 
@@ -569,3 +570,12 @@ buildMessages:build_pass|buildMessages:!debug_and_release {
 }
 
 # vim: set filetype=config : 
+
+HEADERS += src/ui/widgets/materialpanel.h
+SOURCES += src/ui/widgets/materialpanel.cpp
+
+HEADERS += src/model/roomedit.h src/ui/widgets/roompanel.h
+SOURCES += src/model/roomedit.cpp src/ui/widgets/roompanel.cpp
+
+HEADERS += src/model/portaledit.h
+SOURCES += src/model/portaledit.cpp

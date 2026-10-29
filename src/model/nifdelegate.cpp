@@ -39,6 +39,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ui/widgets/nifcheckboxlist.h"
 
 #include <QItemDelegate> // Inherited
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -108,6 +109,17 @@ public:
 				}
 			}
 
+			if(event->type()==QEvent::MouseButtonRelease && index.column()==NifModel::ValueCol
+			    && static_cast<QMouseEvent *>(event)->button()==Qt::LeftButton
+			    && static_cast<QMouseEvent *>(event)->modifiers()==Qt::NoModifier) {
+				auto value=index.data(Qt::EditRole).value<NifValue>();
+				if(value.type()==NifValue::tColor3 || value.type()==NifValue::tColor4 || value.type()==NifValue::tByteColor4) {
+					auto widget=const_cast<QWidget *>(option.widget);
+					auto view=qobject_cast<QAbstractItemView *>(widget);
+					if(!view && widget)view=qobject_cast<QAbstractItemView *>(widget->parentWidget());
+					if(view){view->edit(index);return true;}
+				}
+			}
 			break;
 		case QEvent::MouseButtonDblClick:
 

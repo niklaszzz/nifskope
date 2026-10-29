@@ -39,6 +39,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QDialog>   // Inherited
 #include <QModelIndex>
 #include <QPointer>
+#include <QSet>
 
 #include <math.h>
 
@@ -51,6 +52,8 @@ class QCheckBox;
 class QDoubleSpinBox;
 class QGridLayout;
 class QMenu;
+class QComboBox;
+class QLabel;
 class QUndoStack;
 
 #undef None // conflicts with Qt
@@ -67,10 +70,21 @@ protected:
 
 public:
 	//! Creates the UV editor widget
-	static UVWidget * createEditor( NifModel * nif, const QModelIndex & index );
+	static UVWidget * createEditor( NifModel * nif, const QModelIndex & index, QWidget * owner=nullptr );
+	bool followMesh(NifModel * model,const QModelIndex & mesh);
 
 	//! Sets the NIF data
 	bool setNifData( NifModel * nif, const QModelIndex & index );
+	NifModel * document() const { return nif; }
+	QModelIndex meshIndex() const { return iShape; }
+	QSet<int> selectedVertices() const;
+	QSet<int> selectedFaces() const;
+	void setViewportSelection(const QSet<int> & vertices,const QSet<int> & faces,bool faceMode);
+
+signals:
+	void selectionChanged();
+
+public:
 
 	//! From QWidget; the recommended size of the widget
 	QSize sizeHint() const override final;
@@ -116,6 +130,8 @@ public slots:
 	void selectAll();
 	//! Select none
 	void selectNone();
+	void invertSelection();
+	void cubeUnwrap();
 	//! Select faces that use the currently selected vertices
 	void selectFaces();
 	//! Select vertices connected to the currently selected vertices
@@ -148,6 +164,22 @@ protected slots:
 private:
 	//! List of selected vertices
 	QList<int> selection;
+	// Screen-space cage: move, eight resize handles, and a rotation handle.
+	int cageHandle=-1;
+	bool boxSelecting=false;
+	Qt::KeyboardModifiers selectionModifiers;
+	QPoint cagePress;
+	Vector2 cagePivot;
+	QVector<Vector2> cageStartCoords;
+	QList<int> cageSelection;
+	QRectF selectionCage() const;
+	QPointF cageHandlePoint(int handle,const QRectF & cage) const;
+	int pickCage(const QPoint & point) const;
+	void drawSelectionCage();
+	void beginCageDrag(int handle,const QPoint & point);
+	void updateCageDrag(const QPoint & point,Qt::KeyboardModifiers modifiers);
+	void finishCageDrag(bool cancel=false);
+	void updateCageCursor(const QPoint & point);
 
 	QRect selectRect;
 	QList<QPoint> selectPoly;
@@ -193,6 +225,9 @@ private:
 
 	NifModel * nif = nullptr;
 	bool uvDragging = false, restoringUndo = false;
+	bool uvRefreshQueued=false;
+	bool viewportFaceSelection=false;
+	QSet<int> viewportFaces;
 	int restoreShape = -1, restoreBlockCount = 0;
 	QAction * documentUndo = nullptr, * documentRedo = nullptr;
 	QPersistentModelIndex iShape, iShapeData, iTexCoords, iTex, iPartBlock;
@@ -201,9 +236,9 @@ private:
 	bool isDataOnSkin = false;
 
 	//! Submenu for texture slot selection
-	QMenu * menuTexSelect;
+	QMenu * menuTexSelect = nullptr;
 	//! Group that holds texture slot selection actions
-	QActionGroup * texSlotGroup;
+	QActionGroup * texSlotGroup = nullptr;
 	//! List of valid textures
 	QStringList validTexs;
 
@@ -216,6 +251,13 @@ private:
 	bool setTexCoords();
 	//! Coordinate set currently in use
 	int currentCoordSet = 0;
+	QWidget * mapControls = nullptr;
+	QComboBox * textureChoice = nullptr, * uvChoice = nullptr;
+	QLabel * mapStatus = nullptr;
+	void chooseTexture(int index);
+	void refreshUVChoices();
+	QModelIndex textureProperty() const;
+	int textureCoordinateSet(const QModelIndex & descriptor) const;
 
 	//! Submenu for coordinate set selection
 	QMenu * coordSetSelect;

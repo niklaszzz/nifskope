@@ -4,6 +4,7 @@
 #include "model/nifmodel.h"
 
 #include <QLineF>
+#include <QPolygonF>
 #include <QUndoStack>
 #include <algorithm>
 #include <cmath>
@@ -33,7 +34,26 @@ void GLView::setGizmoMode( GizmoMode mode )
 	finishGizmo( true );
 	gizmoMode = mode;
 	gizmoVisible = false;
+	emit gizmoModeChanged(int(mode));
 	update();
+}
+
+void GLView::setMeshCenterPivot(bool enabled)
+{
+	finishGizmo(true);
+	meshCenterPivot=enabled;gizmoVisible=false;update();
+}
+
+bool GLView::meshPivot(const QModelIndex & block,Vector3 & pivot) const
+{
+	VertexEditData data;
+	if(!data.read(model,block) || data.positions.isEmpty())return false;
+	Vector3 low=data.positions.first(),high=low;
+	for(auto v:data.positions)for(int a=0;a<3;++a) {
+		if(!std::isfinite(v[a]))return false;
+		low[a]=qMin(low[a],v[a]);high[a]=qMax(high[a],v[a]);
+	}
+	pivot=(low+high)*.5f;return true;
 }
 
 bool GLView::projectGizmo( const Vector3 & point, QPointF & screen ) const
@@ -51,7 +71,7 @@ void GLView::drawGizmo()
 	// The same projected geometry is used for drawing and picking.
 	{
 		gizmoVisible = false;
-		if ( !model || gizmoMode == GizmoSelect || view == ViewWalk
+		if ( !model || gizmoMode == GizmoSelect
 			 || ((animState & AnimEnabled) && (animState & AnimPlay)) )
 			return;
 		auto block = scene->selMode == Scene::SelVertex ? editMesh : scene->currentBlock;
@@ -64,6 +84,9 @@ void GLView::drawGizmo()
 			return;
 		const auto world = node->worldTrans();
 		gizmoOrigin = world.translation;
+		if(meshCenterPivot && scene->selMode!=Scene::SelVertex) {
+			Vector3 pivot;if(meshPivot(block,pivot))gizmoOrigin=world*pivot;
+		}
 		if(scene->selMode==Scene::SelVertex) {
 			Vector3 pivot;
 			if(!vertexProjectionValid || !editSelectionPivot(pivot)) return;
@@ -72,7 +95,7 @@ void GLView::drawGizmo()
 		for ( int a = 0; a < 3; ++a ) {
 			Vector3 unit;
 			unit[a] = 1;
-			gizmoDirections[a] = world.rotation * unit;
+			gizmoDirections[a] = worldAxes?unit:world.rotation * unit;
 		}
 		glMatrixMode( GL_MODELVIEW );
 		glPushMatrix();
@@ -85,7 +108,7 @@ void GLView::drawGizmo()
 			return;
 		// Convert a fixed screen distance to world units at the pivot depth.
 		Vector3 camera = viewTrans * gizmoOrigin;
-		if ( perspectiveMode )
+		if ( perspectiveMode || view==ViewWalk )
 			gizmoLength = float( -camera[2] * 2 * tan( cfg.fov / Zoom * pi / 360 ) * 85 / qMax( 1, height() ) );
 		else {
 			// Unproject at the pivot depth; this also accounts for orthographic zoom.
@@ -101,6 +124,18 @@ void GLView::drawGizmo()
 			if ( !projectGizmo( gizmoOrigin + gizmoDirections[a] * gizmoLength, gizmoScreenAxes[a] ) )
 				return;
 			gizmoRings[a].clear();
+			gizmoPlanes[a].clear();
+			if(gizmoMode==GizmoMove) {
+				const float offsets[4][2]={{.22f,.22f},{.46f,.22f},{.46f,.46f},{.22f,.46f}};
+				for(auto & offset:offsets) {
+					QPointF p;
+					auto corner=gizmoOrigin+(gizmoDirections[(a+1)%3]*offset[0]+gizmoDirections[(a+2)%3]*offset[1])*gizmoLength;
+					if(!projectGizmo(corner,p)){gizmoPlanes[a].clear();break;}gizmoPlanes[a]<<p;
+				}
+				double area=0;for(int i=0;i<gizmoPlanes[a].size();++i){auto p=gizmoPlanes[a][i],q=gizmoPlanes[a][(i+1)%4];area+=p.x()*q.y()-q.x()*p.y();}
+				if(std::abs(area)<64)gizmoPlanes[a].clear();
+			}
+			if(gizmoMode!=GizmoRotate)continue;
 			for ( int s = 0; s <= ringSegments; ++s ) {
 				double t = 2 * pi * s / ringSegments;
 				Vector3 p = gizmoOrigin + (gizmoDirections[(a + 1) % 3] * cos(t)
@@ -136,6 +171,17 @@ void GLView::drawGizmo()
 	glLoadIdentity();
 	glLineWidth( 3 );
 	const float colors[3][3] = { {1, .25f, .2f}, {.25f, 1, .3f}, {.3f, .55f, 1} };
+	if(gizmoMode==GizmoMove) {
+		glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+		for(int a=0;a<3;++a) {
+			if(gizmoPlanes[a].size()!=4)continue;
+			if(gizmoAxis==a+3)glColor4f(1,.9f,.15f,.65f);else glColor4f(colors[a][0],colors[a][1],colors[a][2],.25f);
+			glBegin(GL_QUADS);for(auto p:gizmoPlanes[a])glVertex2d(p.x(),p.y());glEnd();
+			if(gizmoAxis==a+3)glColor3f(1,.9f,.15f);else glColor3fv(colors[a]);
+			glLineWidth(1.5f);glBegin(GL_LINE_LOOP);for(auto p:gizmoPlanes[a])glVertex2d(p.x(),p.y());glEnd();
+		}
+		glDisable(GL_BLEND);glLineWidth(3);
+	}
 	for ( int a = 0; a < 3; ++a ) {
 		if ( gizmoAxis == a ) glColor3f( 1, .9f, .15f );
 		else glColor3fv( colors[a] );
@@ -179,6 +225,9 @@ int GLView::pickGizmo( const QPoint & point ) const
 	if ( !gizmoVisible ) return -1;
 	if ( gizmoMode == GizmoScale )
 		return QLineF( point, gizmoScreenOrigin ).length() <= 12 ? 3 : -1;
+	if(gizmoMode==GizmoMove) {
+		for(int a=0;a<3;++a)if(gizmoPlanes[a].size()==4 && QPolygonF(gizmoPlanes[a]).containsPoint(point,Qt::OddEvenFill))return a+3;
+	}
 	double best = 9;
 	int axis = -1;
 	for ( int a = 0; a < 3; ++a ) {
@@ -210,6 +259,8 @@ bool GLView::beginGizmo( const QPoint & point )
 	if(vertexGizmo) gizmoParent=node->worldTrans();
 	if ( std::abs( gizmoParent.scale ) < 1e-8 ) return false;
 	gizmoStart = Transform( model, gizmoBlock );
+	gizmoLocalPivot=Vector3();
+	if(!vertexGizmo && meshCenterPivot)meshPivot(gizmoBlock,gizmoLocalPivot);
 	if(vertexGizmo) {
 		if(!refreshEditData()) return false;
 		gizmoStart=Transform();
@@ -226,7 +277,8 @@ bool GLView::beginGizmo( const QPoint & point )
 	gizmoPress = point;
 	gizmoDragDirection = QPointF();
 	if ( gizmoMode == GizmoMove ) {
-		gizmoDragDirection = gizmoScreenAxes[a] - gizmoScreenOrigin;
+		if(a<3)gizmoDragDirection = gizmoScreenAxes[a] - gizmoScreenOrigin;
+		else if(!gizmoPlanePoint(point,a-3,gizmoPlaneStart))return false;
 	} else if ( gizmoMode == GizmoRotate ) {
 		double best = 1e30;
 		for ( int s = 1; s < gizmoRings[a].size(); ++s ) {
@@ -250,7 +302,7 @@ bool GLView::beginGizmo( const QPoint & point )
 	return true;
 }
 
-bool GLView::gizmoPlaneAngle( const QPoint & point, double & angle ) const
+bool GLView::gizmoPlanePoint(const QPoint & point,int normalAxis,Vector3 & result) const
 {
 	GLdouble ax, ay, az, bx, by, bz;
 	if ( !gluUnProject( point.x(), height() - point.y(), 0, gizmoDragModelview,
@@ -259,12 +311,19 @@ bool GLView::gizmoPlaneAngle( const QPoint & point, double & angle ) const
 		gizmoDragProjection, gizmoDragViewport, &bx, &by, &bz ) ) return false;
 	Vector3 origin(ax, ay, az), ray(bx-ax, by-ay, bz-az);
 	ray.normalize();
-	Vector3 normal = gizmoDragAxes[gizmoAxis];
+	Vector3 normal = gizmoDragAxes[normalAxis];
 	double denominator = Vector3::dotproduct( ray, normal );
 	if ( std::abs(denominator) < .08 ) return false;
 	double t = Vector3::dotproduct( gizmoDragOrigin - origin, normal ) / denominator;
 	if ( t <= 0 ) return false;
-	Vector3 offset = origin + ray * t - gizmoDragOrigin;
+	result=origin+ray*t;
+	return std::isfinite(result[0]) && std::isfinite(result[1]) && std::isfinite(result[2]);
+}
+
+bool GLView::gizmoPlaneAngle( const QPoint & point, double & angle ) const
+{
+	Vector3 pointOnPlane;if(!gizmoPlanePoint(point,gizmoAxis,pointOnPlane))return false;
+	Vector3 offset = pointOnPlane - gizmoDragOrigin;
 	if ( offset.length() < gizmoDragLength * .05 ) return false;
 	angle = std::atan2( Vector3::dotproduct(offset, gizmoDragAxes[(gizmoAxis+2)%3]),
 		Vector3::dotproduct(offset, gizmoDragAxes[(gizmoAxis+1)%3]) );
@@ -279,7 +338,13 @@ void GLView::dragGizmo( const QPoint & point )
 	double length2 = QPointF::dotProduct( gizmoDragDirection, gizmoDragDirection );
 	double amount = length2 > 0 ? QPointF::dotProduct( delta, gizmoDragDirection ) / length2 : 0;
 	if ( gizmoMode == GizmoMove ) {
-		Vector3 worldDelta = gizmoDragAxes[gizmoAxis] * (amount * gizmoDragLength);
+		Vector3 worldDelta;
+		if(gizmoAxis<3)worldDelta=gizmoDragAxes[gizmoAxis]*(amount*gizmoDragLength);
+		else {
+			Vector3 position;if(!gizmoPlanePoint(point,gizmoAxis-3,position))return;
+			worldDelta=position-gizmoPlaneStart;
+			const auto normal=gizmoDragAxes[gizmoAxis-3];worldDelta-=normal*Vector3::dotproduct(worldDelta,normal);
+		}
 		snapTarget=-1;
 		if(vertexGizmo && vertexSnap) {
 			double best=14;
@@ -288,7 +353,16 @@ void GLView::dragGizmo( const QPoint & point )
 				double distance=QLineF(point,p).length();
 				if(distance<best){best=distance;snapTarget=i;}
 			}
-			if(snapTarget>=0) worldDelta=snapTargets[snapTarget]-snapAnchor;
+			if(snapTarget>=0) {
+				auto targetDelta=snapTargets[snapTarget]-snapAnchor;
+				if(gizmoAxis<3) {
+					auto direction=gizmoDragAxes[gizmoAxis];
+					worldDelta=direction*Vector3::dotproduct(targetDelta,direction);
+				} else {
+					auto normal=gizmoDragAxes[gizmoAxis-3];
+					worldDelta=targetDelta-normal*Vector3::dotproduct(targetDelta,normal);
+				}
+			}
 		}
 		result.translation += gizmoParent.rotation.inverted() * worldDelta / gizmoParent.scale;
 	} else if ( gizmoMode == GizmoRotate ) {
@@ -305,8 +379,15 @@ void GLView::dragGizmo( const QPoint & point )
 		Vector3 angles;
 		angles[gizmoAxis] = amount;
 		result.rotation = gizmoStart.rotation * Matrix::euler( angles[0], angles[1], angles[2] );
+		if(worldAxes)result.rotation=gizmoParent.rotation.inverted()*Matrix::euler(angles[0],angles[1],angles[2])*gizmoParent.rotation*gizmoStart.rotation;
 	} else if ( gizmoMode == GizmoScale ) {
 		result.scale *= std::exp( qBound( -9.0, (delta.x() - delta.y()) / 120.0, 9.0 ) );
+	}
+	if(!vertexGizmo && meshCenterPivot && gizmoMode!=GizmoMove) {
+		// Keep the temporary pivot fixed in parent space as the object rotates
+		// or scales. Geometry and the stored local origin are not rebased.
+		result.translation=gizmoStart.translation+gizmoStart.rotation*gizmoLocalPivot*gizmoStart.scale
+			-result.rotation*gizmoLocalPivot*result.scale;
 	}
 	if ( !std::isfinite(result.scale) ) return;
 	for ( int a = 0; a < 3; ++a ) {

@@ -39,6 +39,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QLocale>
 #include <QModelIndex>
 #include <QSet>
+#include <QPointer>
 #include <QUndoCommand>
 
 #include <memory>
@@ -76,6 +77,8 @@ class QStandardItemModel;
 class QAction;
 class QActionGroup;
 class QComboBox;
+class QTabBar;
+class WorkspaceTest;
 class QGraphicsScene;
 class QProgressBar;
 class QStringList;
@@ -103,6 +106,8 @@ namespace nstheme
 class NifSkope final : public QMainWindow
 {
 	Q_OBJECT
+	friend class WorkspaceTest;
+	friend class ViewportResizeTest;
 
 public:
 	NifSkope();
@@ -158,12 +163,14 @@ public:
 	static void reloadTheme();
 
 signals:
+	void activeDocumentChanged();
 	void beginLoading();
 	void completeLoading( bool, QString & );
 	void beginSave();
 	void completeSave( bool, QString & );
 
 public slots:
+	void synchronizeUVEditor(class UVWidget * editor);
 	void openFile( QString & );
 	void openFiles( QStringList & );
 
@@ -259,8 +266,6 @@ protected slots:
 	//! Change system locale and notify user that restart may be required
 	void sltLocaleChanged();
 
-	//! Called after window resizing has stopped
-	void resizeDone();
 
 protected:
 	void closeEvent( QCloseEvent * e ) override final;
@@ -268,6 +273,28 @@ protected:
 	bool eventFilter( QObject * o, QEvent * e ) override final;
 
 private:
+	struct WorkspaceDocument {
+		NifModel * model = nullptr;
+		QString path;
+		int selectedBlock = -1, editBlock = -1;
+		QSet<int> selectedVertices, selectedFaces;
+		bool faceMode=false;
+		bool vertexMode = false;
+		bool showHidden = false, showCollision = false;
+	};
+	QVector<WorkspaceDocument> documents;
+	int activeDocument = 0;
+	QTabBar * documentTabs = nullptr;
+	bool workspaceBusy = false;
+	void initWorkspace();
+	void connectDocument(NifModel * model);
+	void updateWorkspaceUi();
+	bool addWorkspaceFile(const QString & path,QString & error);
+	void activateDocument(int index);
+	void removeWorkspaceDocument(int index);
+	bool saveWorkspace(QString & error);
+	bool confirmWorkspace();
+	void refreshReferences();
 	void initActions();
 	void initDockWidgets();
 	void initToolBars();
@@ -361,6 +388,7 @@ private:
 
 	//! The main window
 	GLView * ogl;
+	QPointer<class UVWidget> syncedUVEditor;
 
 	QGraphicsScene * graphicsScene;
 	GLGraphicsView * graphicsView;
@@ -409,9 +437,6 @@ private:
 	QAction * recentArchiveActs[NumRecentFiles];
 	QAction * recentArchiveFileActs[NumRecentFiles];
 
-	bool isResizing;
-	QTimer * resizeTimer;
-	QImage viewBuffer;
 
 	struct Settings
 	{

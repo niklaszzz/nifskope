@@ -7,13 +7,9 @@ AboutDialog::AboutDialog( QWidget * parent )
 
 	setAttribute( Qt::WA_DeleteOnClose );
 
-#ifdef NIFSKOPE_REVISION
-	this->setWindowTitle( tr( "About NifSkope %1 (revision %2)" ).arg( NIFSKOPE_VERSION, NIFSKOPE_REVISION ) );
-#else
-	this->setWindowTitle( tr( "About NifSkope %1" ).arg( NIFSKOPE_VERSION ) );
-#endif
+	this->setWindowTitle( tr( "About MicroSkope %1" ).arg( NIFSKOPE_VERSION ) );
 	QString text = tr( R"rhtml(
-	<p>NifSkope is a tool for opening and editing the NetImmerse file format (NIF).</p>
+	<p>MicroSkope is a tool for opening and editing the NetImmerse file format (NIF), based on NifSkope.</p>
 
 	<p>NifSkope is free software available under a BSD license.
 	The source is available via <a href='https://github.com/niftools/nifskope'>GitHub</a></p>

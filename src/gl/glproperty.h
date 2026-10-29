@@ -236,6 +236,7 @@ public:
 
 	QString fileName( int id ) const;
 	int coordSet( int id ) const;
+	bool hasTexture( int id ) const { return id >= 0 && id < numTextures && textures[id].iSource.isValid(); }
 
 	static int getId( const QString & id );
 
@@ -266,6 +267,7 @@ public:
 	bool bind( const QVector<QVector<Vector2> > & texcoords );
 
 	QString fileName() const;
+	bool hasTexture() const { return iImage.isValid(); }
 
 protected:
 	QPersistentModelIndex iImage;
@@ -292,6 +294,7 @@ public:
 	friend void glProperty( class MaterialProperty *, class SpecularProperty * );
 
 	GLfloat alphaValue() const { return alpha; }
+	Color4 diffuseColor() const { return diffuse.blend( alpha ); }
 
 protected:
 	Color4 ambient, diffuse, specular, emissive;
@@ -353,6 +356,7 @@ public:
 	void update( const NifModel * nif, const QModelIndex & index ) override final;
 
 	friend void glProperty( VertexColorProperty *, bool vertexcolors );
+	bool usesVertexAlpha() const { return vertexmode != 0 && vertexmode != 1; }
 
 protected:
 	int lightmode = 0;

@@ -69,6 +69,36 @@ public:
 		check(model.undoStack->count() == 1, "mouse drag commits one history entry");
 		model.undo();
 		check(model.get<Vector3>(model.getBlock(1), "Translation") == original.translation, "undo mouse move");
+		// The move squares constrain the cursor's world ray to two local axes.
+		view->setRotation(35,25,-35);
+		for(bool perspective:{true,false})for(int normal=0;normal<3;++normal) {
+			view->setCurrentIndex(model.getBlock(1));view->setProjection(perspective);view->updateGL();
+			int u=(normal+1)%3,v=(normal+2)%3;QPointF planeStart,planeEnd;
+			auto anchor=view->gizmoOrigin+(view->gizmoDirections[u]+view->gizmoDirections[v])*(view->gizmoLength*.34f);
+			check(view->projectGizmo(anchor,planeStart) && view->projectGizmo(anchor+(view->gizmoDirections[u]*.18f+view->gizmoDirections[v]*.14f)*view->gizmoLength,planeEnd),"project a two-axis move handle and drag destination");
+			check(view->pickGizmo(planeStart.toPoint())==normal+3,"pick the intended local movement plane");
+			auto cameraPosition=view->Pos;
+			mouse(view,QEvent::MouseButtonPress,planeStart.toPoint());mouse(view,QEvent::MouseMove,planeEnd.toPoint());mouse(view,QEvent::MouseButtonRelease,planeEnd.toPoint());
+			auto translation=model.get<Vector3>(model.getBlock(1),"Translation")-original.translation;
+			check(translation[u]>.01f && translation[v]>.01f && std::abs(translation[normal])<.001f,"plane drag moves along both chosen axes while preserving the third under a transformed parent");
+			check(view->Pos==cameraPosition && model.undoStack->index()==1,"plane drag leaves the camera fixed and commits one undo step");
+			model.undo();check(model.get<Vector3>(model.getBlock(1),"Translation")==original.translation,"undo two-axis movement");
+		}
+		view->setCurrentIndex(model.getBlock(1));view->setProjection(true);view->setRotation(25,0,-20);view->updateGL();
+		auto orbitCamera=view->viewTrans;
+		view->setOrientation(GLView::ViewWalk);view->updateGL();
+		check(view->gizmoVisible && (view->viewTrans.translation-orbitCamera.translation).length()<.001f,"entering WASD Walk mode preserves the camera and selected gizmo");
+		auto walkPosition=view->Pos;view->cfg.moveSpd=50;
+		QKeyEvent forward(QEvent::KeyPress,Qt::Key_W,Qt::NoModifier),releaseForward(QEvent::KeyRelease,Qt::Key_W,Qt::NoModifier);
+		QMouseEvent flyPress(QEvent::MouseButtonPress,QPoint(400,300),Qt::RightButton,Qt::RightButton,Qt::NoModifier);QApplication::sendEvent(view,&flyPress);
+		QApplication::sendEvent(view,&forward);view->lastTime=QTime::currentTime().addMSecs(-100);view->advanceGears();QApplication::sendEvent(view,&releaseForward);QMouseEvent flyRelease(QEvent::MouseButtonRelease,QPoint(400,300),Qt::RightButton,Qt::NoButton,Qt::NoModifier);QApplication::sendEvent(view,&flyRelease);view->updateGL();
+		check((view->Pos-walkPosition).length()>1 && view->gizmoVisible,"WASD camera movement continues to work with the gizmo visible");
+		view->setPosition(walkPosition);view->updateGL();start=(view->gizmoScreenOrigin*.3+view->gizmoScreenAxes[0]*.7).toPoint();
+		mouse(view,QEvent::MouseButtonPress,start);end=start+(view->gizmoDragDirection*.2).toPoint();mouse(view,QEvent::MouseMove,end);mouse(view,QEvent::MouseButtonRelease,end);
+		check(view->Pos==walkPosition && model.get<Vector3>(model.getBlock(1),"Translation")[0]>original.translation[0],"Walk mode supports object gizmo drags without moving the camera");
+		model.undo();view->setCurrentIndex(model.getBlock(1));view->updateGL();
+		view->setOrientation(GLView::ViewUser,false);view->updateGL();
+		check((view->viewTrans.translation-orbitCamera.translation).length()<.001f && view->gizmoVisible,"leaving Walk mode preserves the camera and restores orbit editing");
 
 		view->setCurrentIndex(model.getBlock(1));
 		view->setGizmoMode(GLView::GizmoRotate);

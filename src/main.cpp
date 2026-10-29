@@ -72,9 +72,9 @@ int main( int argc, char * argv[] )
 
 		a->setOrganizationName( "NifTools" );
 		a->setOrganizationDomain( "niftools.org" );
-		a->setApplicationName( "NifSkope " + NifSkopeVersion::rawToMajMin( NIFSKOPE_VERSION ) );
+		a->setApplicationName( NIFSKOPE_SETTINGS_APP );
 		a->setApplicationVersion( NIFSKOPE_VERSION );
-		a->setApplicationDisplayName( "NifSkope " + NifSkopeVersion::rawToDisplay( NIFSKOPE_VERSION, true ) );
+		a->setApplicationDisplayName( "MicroSkope " + QString(NIFSKOPE_VERSION) );
 
 		// Must set current directory or this causes issues with several features
 		QDir::setCurrent( qApp->applicationDirPath() );
@@ -107,7 +107,7 @@ int main( int argc, char * argv[] )
 		parser.addVersionOption();
 
 		// Add port option
-		QCommandLineOption portOption( {"p", "port"}, "Port NifSkope listens on", "port" );
+		QCommandLineOption portOption( {"p", "port"}, "Port MicroSkope listens on", "port" );
 		parser.addOption( portOption );
 
 		// Process options

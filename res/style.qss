@@ -37,6 +37,7 @@ QDockWidget {
 
 /* Fix toolbar button spacing */
 #tRender QToolButton#btnRender:enabled,
+#tRender QToolButton[compactTool="true"]:enabled,
 #tAnim QToolButton:enabled,
 #mLight QAbstractButton {
     padding: 1px 1px;
@@ -45,8 +46,25 @@ QDockWidget {
     border: 1px solid transparent;
 }
 
+/* Cycling buttons reserve a separate, fixed-width dropdown target. */
+#tRender QToolButton[cyclingTool="true"]:enabled,
+#tRender QToolButton[cyclingTool="true"]:disabled {
+    padding: 1px 17px 1px 3px;
+}
+#tRender QToolButton[cyclingTool="true"]::menu-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 14px;
+    border-left: 1px solid palette(mid);
+}
+#tRender QToolButton[cyclingTool="true"]::menu-arrow {
+    width: 7px;
+    height: 7px;
+}
+
 /* Selected toolbar buttons */
 #tRender QToolButton#btnRender:enabled:checked,
+#tRender QToolButton[compactTool="true"]:enabled:checked,
 #tAnim QToolButton:enabled:checked,
 #mLight QAbstractButton:enabled:checked {
     border: 1px solid rgba(0, 0, 0, 32);
@@ -55,6 +73,7 @@ QDockWidget {
 
 /* Hovered toolbar buttons */
 #tRender QToolButton#btnRender:enabled:hover,
+#tRender QToolButton[compactTool="true"]:enabled:hover,
 #tAnim QToolButton:enabled:hover,
 #mLight QAbstractButton:enabled:hover {
     border: 1px solid rgba(${rgb}, 255); 

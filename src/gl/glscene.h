@@ -111,11 +111,14 @@ public:
 		DisableShaders = 0x8000,
 		ShowHidden = 0x10000,
 		DoSkinning = 0x20000,
-		DoErrorColor = 0x40000
+		DoErrorColor = 0x40000,
+		Unshaded = 0x80000
 	};
 	Q_DECLARE_FLAGS( SceneOptions, SceneOption );
 
 	SceneOptions options;
+	float detailBrightness = 2.0f;
+	QPersistentModelIndex isolatedRoot;
 
 	enum VisModes
 	{

@@ -1,4 +1,4 @@
-﻿/***** BEGIN LICENSE BLOCK *****
+/***** BEGIN LICENSE BLOCK *****
 
 BSD License
 
@@ -170,21 +170,6 @@ NifSkope::NifSkope()
 	nif->resetUndoHistory();
 
 	indexStack = new QUndoStack( this );
-	connect( nif->undoStack, &QUndoStack::cleanChanged, this, [this]( bool clean ) {
-		setWindowModified( !clean );
-	} );
-	auto undoBlock = std::make_shared<int>( -1 );
-	connect( nif, &NifModel::undoAboutToRestore, this, [this, undoBlock]() {
-		*undoBlock = nif->getBlockNumber( ogl->getScene()->currentBlock );
-	} );
-	connect( nif, &NifModel::undoRestored, this, [this, undoBlock]() {
-		indexStack->clear();
-		currentIdx = QModelIndex();
-		header->setRootIndex( nif->getHeader() );
-		auto block = nif->getBlock( *undoBlock );
-		select( block.isValid() ? block : nif->getHeader() );
-		indexStack->clear();
-	} );
 
 	kfm = new KfmModel( this );
 	kfmEmpty = new KfmModel( this );
@@ -281,11 +266,6 @@ NifSkope::NifSkope()
 	progress->setVisible( false );
 
 	// Process progress events
-	connect( nif, &NifModel::sigProgress, [this]( int c, int m ) {
-		progress->setRange( 0, m );
-		progress->setValue( c );
-		qApp->processEvents();
-	} );
 
 	/*
 	 * UI Init
@@ -311,12 +291,6 @@ NifSkope::NifSkope()
 	
 	setContextMenuPolicy( Qt::NoContextMenu );
 
-	// Resize timer for eventFilter()
-	isResizing = false;
-	resizeTimer = new QTimer( this );
-	resizeTimer->setSingleShot( true );
-	connect( resizeTimer, &QTimer::timeout, this, &NifSkope::resizeDone );
-
 	// Set Actions
 	initActions();
 
@@ -331,6 +305,7 @@ NifSkope::NifSkope()
 
 	// Connections (that are required to load after all other inits)
 	initConnections();
+	initWorkspace();
 
 	connect( options, &SettingsDialog::saveSettings, this, &NifSkope::updateSettings );
 	connect( options, &SettingsDialog::localeChanged, this, &NifSkope::sltLocaleChanged );
@@ -354,6 +329,12 @@ void NifSkope::exitRequested()
 
 NifSkope::~NifSkope()
 {
+	// Models may emit undo-state signals while QObject destroys their children.
+	// The window's widgets and UI bookkeeping are already being torn down then.
+	for(const auto & document:documents) {
+		disconnect(document.model,nullptr,this,nullptr);
+		disconnect(document.model->undoStack,nullptr,this,nullptr);
+	}
 	delete ui;
 }
 
@@ -628,6 +609,7 @@ QString NifSkope::getCurrentFile() const
 void NifSkope::setCurrentFile( const QString & filename )
 {
 	currentFile = QDir::fromNativeSeparators( filename );
+	if(!documents.isEmpty())documents[activeDocument].path=currentFile;
 
 	nif->refreshFileInfo( currentFile );
 
@@ -647,6 +629,7 @@ void NifSkope::setCurrentFile( const QString & filename )
 	settings.setValue( "File/Recent File List", files );
 
 	updateAllRecentFileActions();
+	updateWorkspaceUi();
 }
 
 void NifSkope::setCurrentArchiveFile( const QString & filepath )
@@ -957,12 +940,24 @@ void NifSkope::openFiles( QStringList & files )
 
 void NifSkope::saveFile( const QString & filename )
 {
+	QFileInfo destination(filename);QString target=destination.canonicalFilePath();if(target.isEmpty())target=destination.absoluteFilePath();
+	for(int i=0;i<documents.size();++i) {
+		QFileInfo other(documents[i].path);QString existing=other.canonicalFilePath();if(existing.isEmpty())existing=other.absoluteFilePath();
+		if(i!=activeDocument && existing.compare(target,Qt::CaseInsensitive)==0) {
+		QMessageBox::warning(this,tr("Save File"),tr("That path belongs to another NIF in this workspace. Choose a separate filename."));return;
+		}
+	}
 	setCurrentFile( filename );
 	save();
 }
 
 void NifSkope::loadFile( const QString & filename )
 {
+	if(documents.size()>1) {
+		QString path=QFileInfo(filename).canonicalFilePath();
+		if(!path.isEmpty())for(int i=0;i<documents.size();++i)if(QFileInfo(documents[i].path).canonicalFilePath().compare(path,Qt::CaseInsensitive)==0){activateDocument(i);return;}
+		if(filename.endsWith(".kfm",Qt::CaseInsensitive)){createWindow(filename);return;}
+	}
 	QApplication::setOverrideCursor( Qt::WaitCursor );
 
 	setCurrentFile( filename );
@@ -1006,6 +1001,9 @@ void NifSkope::load()
 
 void NifSkope::save()
 {
+	if(documents.size()>1) {
+		QString error;if(!saveWorkspace(error))QMessageBox::warning(this,tr("Save All NIFs"),error);return;
+	}
 	nif->flushUndoHistory();
 	// Assure file path is absolute
 	// If not absolute, it is loaded from a BSA
@@ -1169,9 +1167,9 @@ void NifSkope::migrateSettings() const
 	QSettings cfg1_2( "NifTools", "NifSkope 1.2" );
 
 	// Current version strings
-	QString curVer = NIFSKOPE_VERSION;
+	QString curVer = NIFSKOPE_SETTINGS_VERSION;
 	QString curQtVer = QT_VERSION_STR;
-	QString curDisplayVer = NifSkopeVersion::rawToDisplay( NIFSKOPE_VERSION, true );
+	QString curDisplayVer = "MicroSkope " + QString(NIFSKOPE_VERSION);
 
 	// New Install, no need to migrate anything
 	if ( !settings.value( "Version" ).isValid() && !cfg1_1.value( "version" ).isValid() ) {

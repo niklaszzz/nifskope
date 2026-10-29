@@ -8,6 +8,7 @@
 #include <QtEndian>
 #include <cmath>
 #include <cstring>
+#include <functional>
 
 namespace {
 quint32 word(const QByteArray & b,int p) { return qFromLittleEndian<quint32>(b.constData()+p); }
@@ -40,7 +41,7 @@ bool pose(NifModel * model,const QModelIndex & field,QMatrix4x4 & m) {
 	}
 	return true;
 }
-bool sourceGeometry(NifModel * model,const PhysXCollision::Mesh & mesh,QVector<Vector3> & vertices,QVector<quint32> & indices,QString & error) {
+bool sourcePartGeometry(NifModel * model,const PhysXCollision::Mesh & mesh,QVector<Vector3> & vertices,QVector<quint32> & indices,QString & error,const QMatrix4x4 * sourceWorld) {
 	VertexEditData data;
 	if(!data.read(model,mesh.source,&error))return false;
 	if(model->get<uint>(mesh.source,"Primitive Type")!=0 || model->get<uint>(mesh.source,"Num Submeshes")!=1) {
@@ -73,7 +74,8 @@ bool sourceGeometry(NifModel * model,const PhysXCollision::Mesh & mesh,QVector<V
 	}
 	if(indices.isEmpty()){error=QObject::tr("No collision source triangles found.");return false;}
 	QMatrix4x4 source;bool invertible=false;
-	if(!worldMatrix(model,mesh.source,source)){error=QObject::tr("Cyclic scene hierarchy.");return false;}
+	if(sourceWorld)source=*sourceWorld;
+	else if(!worldMatrix(model,mesh.source,source)){error=QObject::tr("Cyclic scene hierarchy.");return false;}
 	QMatrix4x4 toCollision=mesh.world.inverted(&invertible)*source;
 	if(!invertible){error=QObject::tr("Collision transform is singular.");return false;}
 	for(auto v:data.positions) {
@@ -83,6 +85,63 @@ bool sourceGeometry(NifModel * model,const PhysXCollision::Mesh & mesh,QVector<V
 	// A mirrored source transform needs winding reversed to retain its front faces.
 	if(toCollision.determinant()<0)for(int i=0;i<indices.size();i+=3)qSwap(indices[i+1],indices[i+2]);
 	return true;
+}
+
+bool sourceGeometry(NifModel * model,const PhysXCollision::Mesh & mesh,QVector<Vector3> & vertices,QVector<quint32> & indices,QString & error) {
+    if(mesh.sourceMeshes.isEmpty() || mesh.sourceWorlds.size()!=mesh.sourceMeshes.size()){error=QObject::tr("No complete source geometry was resolved.");return false;}
+    for(int n=0;n<mesh.sourceMeshes.size();++n){
+        PhysXCollision::Mesh part;part.source=mesh.sourceMeshes[n];part.world=mesh.world;
+        QVector<Vector3> points;QVector<quint32> triangles;
+        if(!sourcePartGeometry(model,part,points,triangles,error,&mesh.sourceWorlds[n])){
+            error=model->get<QString>(part.source,"Name")+": "+error;return false;
+        }
+        if(qint64(vertices.size())+points.size()>4000000 || qint64(indices.size())+triangles.size()>12000000){
+            error=QObject::tr("Combined collision geometry exceeds supported limits.");return false;
+        }
+        quint32 offset=vertices.size();vertices+=points;
+        for(auto index:triangles)indices<<offset+index;
+    }
+    return true;
+}
+
+bool resolveSources(NifModel * model,const QVector<QModelIndex> & matches,
+                    const QMap<int,QVector<int>> & parents,PhysXCollision::Mesh & mesh,QString & error){
+    auto fail=[&](const QString & why){error=QObject::tr("Collision '%1': %2").arg(mesh.name,why);return false;};
+    if(mesh.name.isEmpty() || matches.isEmpty())return fail(QObject::tr("no matching NiMesh or NiNode source."));
+    QSet<int> named;for(auto block:matches)named.insert(model->getBlockNumber(block));
+    QVector<QModelIndex> roots;
+    for(auto block:matches){int id=model->getBlockNumber(block);QSet<int> seen;bool nested=false;
+        while(true){if(seen.contains(id))return fail(QObject::tr("cyclic source hierarchy."));seen.insert(id);
+            auto owners=parents.value(id);if(owners.size()>1)return fail(QObject::tr("source has multiple scene parents."));
+            if(owners.isEmpty())break;id=owners.first();if(named.contains(id))nested=true;
+        }
+        if(!nested)roots<<block;
+    }
+    if(roots.size()!=1)return fail(QObject::tr("multiple unrelated objects have the same name."));
+    mesh.source=roots.first();bool group=model->getBlockName(mesh.source)=="NiNode";QSet<int> seen;
+    std::function<bool(QModelIndex)> visit=[&](QModelIndex block){
+        int id=model->getBlockNumber(block);
+        if(!block.isValid() || seen.contains(id)){error=QObject::tr("missing, repeated or cyclic group child.");return false;}
+        seen.insert(id);
+        auto type=model->getBlockName(block);
+        if(type!="NiNode" && type!="NiMesh"){error=QObject::tr("unsupported source child type '%1'.").arg(type);return false;}
+        if(group && model->getLink(block,"Controller")>=0){error=QObject::tr("animated source groups are unsupported.");return false;}
+        QMatrix4x4 transform;QSet<int> chain;int ancestor=id;
+        while(ancestor>=0){
+            if(chain.contains(ancestor)){error=QObject::tr("cyclic source hierarchy.");return false;}chain.insert(ancestor);
+            auto owners=parents.value(ancestor);if(owners.size()>1){error=QObject::tr("source has multiple scene parents.");return false;}
+            auto node=model->getBlock(ancestor);if(!Transform::canConstruct(model,node)){error=QObject::tr("unsupported source transform.");return false;}
+            transform=matrix(Transform(model,node))*transform;
+            ancestor=owners.isEmpty()?-1:owners.first();
+        }
+        if(!std::isfinite(transform.determinant()) || transform.determinant()==0){error=QObject::tr("invalid or singular source transform.");return false;}
+        if(type=="NiMesh"){mesh.sourceMeshes<<QPersistentModelIndex(block);mesh.sourceWorlds<<transform;return true;}
+        for(int child:model->getLinkArray(block,"Children"))if(child>=0 && !visit(model->getBlock(child)))return false;
+        return true;
+    };
+    if(!visit(mesh.source))return fail(error);
+    if(mesh.sourceMeshes.isEmpty())return fail(QObject::tr("source group contains no NiMesh geometry."));
+    return true;
 }
 }
 
@@ -110,8 +169,11 @@ bool PhysXCollision::collect(NifModel * model,QVector<Mesh> & meshes,QString & e
 	meshes.clear();error.clear();
 	auto fail=[&](const QString & message){error=message;meshes.clear();return false;};
 	if(!hasCollision(model))return fail(QObject::tr("This file contains no NiPhysXProp collision."));
-	QMap<QString,QVector<QModelIndex>> sources;
-	for(int b=0;b<model->getBlockCount();++b){auto block=model->getBlock(b);if(model->inherits(block,"NiMesh"))sources[model->string(model->getIndex(block,"Name"))]<<block;}
+	QMap<QString,QVector<QModelIndex>> sources;QMap<int,QVector<int>> parents;
+	for(int b=0;b<model->getBlockCount();++b){auto block=model->getBlock(b);auto type=model->getBlockName(block);
+		if(type=="NiMesh" || type=="NiNode")sources[model->string(model->getIndex(block,"Name"))]<<block;
+		if(model->inherits(block,"NiNode"))for(int child:model->getLinkArray(block,"Children"))if(child>=0)parents[child]<<b;
+	}
 	QSet<int> targets;
 	for(int b=0;b<model->getBlockCount();++b) {
 		auto prop=model->getBlock(b);if(!model->inherits(prop,"NiPhysXProp"))continue;
@@ -139,8 +201,11 @@ bool PhysXCollision::collect(NifModel * model,QVector<Mesh> & meshes,QString & e
 				int id=model->getBlockNumber(target);
 				if(id<0 || targets.contains(id))return fail(QObject::tr("Missing or shared PhysX mesh description."));targets.insert(id);
 				Mesh mesh;mesh.name=model->string(model->getIndex(target,"Mesh Name"));
-				if(requireSources && (mesh.name.isEmpty() || sources.value(mesh.name).size()!=1))return fail(QObject::tr("Collision '%1' needs exactly one source NiMesh with the same name.").arg(mesh.name));
-				if(sources.value(mesh.name).size()==1)mesh.source=sources.value(mesh.name).first();
+				QString sourceError;
+				if(!resolveSources(model,sources.value(mesh.name),parents,mesh,sourceError)){
+					if(requireSources)return fail(sourceError);
+					mesh.source=QModelIndex();mesh.sourceMeshes.clear();mesh.sourceWorlds.clear();
+				}
 				mesh.data=model->getIndex(target,"Mesh Data");
 				if(model->getValue(mesh.data).type()!=NifValue::tByteArray || !decode(model->get<QByteArray>(mesh.data),mesh.vertices,mesh.indices))return fail(QObject::tr("Unsupported cooked collision data for '%1'.").arg(mesh.name));
 				QMatrix4x4 local;

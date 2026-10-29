@@ -1,4 +1,17 @@
-# NifSkope @VERSION@
+# MicroSkope @VERSION@
+
+A customized NifSkope build. Existing NifSkope 2.0 settings are retained.
+
+- V / W / E / R select Select / Move / Rotate / Scale in the viewport.
+- Hold RMB to look around; RMB + WASD moves, Q/E goes down/up, Shift moves
+  faster, and the wheel adjusts fly speed. Release RMB to resume editing.
+- Ctrl+L selects all connected vertices or faces from the current selection.
+- Vertex/face snapping uses only the axis or plane of the active Move handle.
+- The UV editor supports box selection and a transform cage: drag the interior
+  to move, square handles to scale, and the round handle to rotate. Shift keeps
+  proportions on corner scaling or snaps rotation to 15 degrees. Escape cancels.
+
+## Based on NifSkope
 
 NifSkope is a tool for opening and editing the NetImmerse file format (NIF). NIF is used by video games such as Morrowind, Oblivion, Skyrim, Fallout 3, Fallout: New Vegas, Civilization IV, and more. 
 
@@ -15,13 +28,25 @@ Use **Move**, **Rotate**, or **Scale** on the Render toolbar (or Render > Transf
 
 For vertex editing, select a mesh in **Object Select**, then choose **Vertex Select**. LMB drag-box selects vertices through the locked mesh; Shift adds, Ctrl toggles, and Ctrl+A selects all. Use Move, Rotate, or Scale to transform the selection around its center. Enable **Snap Vertices** to snap the nearest selected anchor to another vertex under the pointer during Move; the target can belong to another visible mesh. Space+LMB pans and Alt+LMB orbits. Escape cancels a selection box or transform. Return to Object Select to choose another mesh.
 
-This first vertex editor supports static, unskinned meshes: classic geometry, supported Bethesda vertex arrays, and NiMesh float32/float16 position streams with one contiguous region. Shared vertex buffers, skinned meshes, and morph/deformation modifiers show an explanatory message. UVs, colors, indices, and stored normals are preserved; normals are not recalculated automatically. Saved bounds update after a completed vertex transform.
+This first vertex editor supports static, unskinned meshes: classic geometry, supported Bethesda vertex arrays, and NiMesh float32/float16 position streams with one contiguous region. Shared geometry is copied for independent editing. Skinned meshes and morph/deformation modifiers show an explanatory message. UVs, colors, indices, and stored normals are preserved; normals are not recalculated automatically. Saved bounds update after a completed vertex transform.
 
-With **Show Nodes** enabled, lights have bright, fixed-size sun markers that remain visible through geometry. Click a marker in Object Select to select the light, then move it with the gizmo or edit its properties. Show Nodes off hides the markers and disables their picking.
+Click a color's hex value in the property table to edit it directly. Copy/paste with Ctrl+C/Ctrl+V; Enter applies and Escape cancels. RGB fields accept six hex digits with or without `#`, in either case. RGBA fields also accept eight digits in `#RRGGBBAA` order; pasting six digits preserves their existing alpha. Incomplete/invalid codes cannot overwrite the stored color. Opening/copying an unchanged value preserves the original float precision and HDR values. The color-wheel icon still opens its existing picker. Color changes support Undo/Redo.
+
+With **Show Nodes** enabled, lights have bright indicators that remain visible through geometry. Directional lights show an arrow in their emission direction; spotlights show an arrow and their cone angles; point lights show an omnidirectional globe. Arrows follow Gamebryo's local +X light axis, including parent rotations. Selected lights turn orange. These fixed-size guides show direction and cone angle, not light range, and never change NIF data. Click a marker's center in Object Select to select the light, then move or rotate it with the gizmo. Show Nodes off hides the indicators and disables their picking.
+
+Selecting a point or spot light with **Show Nodes** enabled also displays world-sized distance falloff guides: solid at 10% attenuation and dashed at 1%. The viewport shows their distances in world units. Gamebryo defines attenuation as `1 / (C + L*d + Q*d*d)`, where `d` is world-space distance and C/L/Q are Constant/Linear/Quadratic Attenuation. All three terms count; zero terms contribute nothing. For C=0, L=0, Q=0.000016, the guides are approximately 790.6 and 2500 units from the light. Larger positive L or Q reduces the distances. These are attenuation multipliers relative to the unattenuated light, not percentages of the displayed peak brightness, and are not hard cutoff radii. Color, dimmer, spotlight angular falloff, material lighting and game-specific shaders affect the visible result. Constant-only and all-zero attenuation have no finite decay contour; invalid negative/nonfinite values are not visualized. Parent scale changes the light's position but does not multiply its world-space falloff radius. The guides update when properties change and on Undo/Redo, never modify saved data, and appear only for the selected light. Directional lights have no distance falloff radius.
+
+In the lighting popover (bulb icon), enable **Unshaded geometry (keep textures)** to remove geometry lighting, normal-map shading, specular and vertex RGB shading. For meshes with a base texture, it ignores material diffuse RGB while preserving material opacity. It preserves the existing texture compositing, including lightmaps, detail maps, decals, glow, UV sets and transparency. Turning it off restores normal rendering and leaves the other preview settings unchanged. The setting is remembered and applies to workspace reference layers too; it never changes NIF data. **Lightmap/detail brightness** is a viewport-only slider from 0% to 200%, with a percentage box for precise values. 100% matches the previous 1x limit; 200% restores the original 2x brightness. It remembers the value, carries over the old checkbox preference, and also applies to workspace references. Saving/exporting NIF data and textures is unaffected.
+
+Enable **Mesh Center Pivot** on the render toolbar or Render menu to place the object gizmo automatically at the selected mesh's bounding-box center. Object rotation and scaling use that temporary center; disabling it returns the gizmo to the stored origin. Changing pivot mode does not edit the NIF or rebase its vertices. Vertex mode continues to pivot around the selected vertices. Clicking a vertex selects every vertex at exactly the same XYZ position in the active mesh, including duplicates at UV/normal seams; vertices that only overlap on screen are not grouped.
+
+The **Move** gizmo includes square handles for moving across the local XY, XZ, and YZ planes; arrows still move along one axis. Plane handles work on objects and selected vertices, with one undo step per drag and Escape to cancel. Nearly edge-on plane handles are hidden. **Walk** mode supports RMB-held WASD camera navigation and allows gizmo editing. Switching into Walk preserves the current camera position and selection instead of recentering inside the selected object; clicking empty space while walking retains the selection.
+
+Use **Workspace > Add NIF to Workspace...** to open a second NIF alongside the current file. File tabs appear above the viewport; click a tab to choose the editable NIF. Other files are transparent, click-through references at their original world coordinates. **Workspace > Show Reference NIFs** and **Reference opacity** control the overlay. Switching files keeps the camera and restores each file's selected mesh/vertices and independent undo history. With multiple files open, normal **Save / Ctrl+S** and **Workspace > Save All NIFs / Ctrl+Shift+S** save each NIF to its own path. PhysX collision rebuilding remains explicit on the collision tab. Save All stages every file before replacing any destination; write failures are reported and unsaved edits are retained. Close a file's tab to remove it from the workspace without deleting its disk file. A single open NIF keeps the normal layout and save behavior. The workspace file list is session-only; the NIFs themselves remain independent files.
 
 Select a mesh and click **UV Editor** on the render toolbar or Render menu (or right-click the mesh and choose **Texture > Edit UV**). NiMesh float32/float16 UV streams are supported alongside the existing classic/Bethesda mesh paths. Left-click selects and drags UVs; drag a box from empty space to select several, use Shift to add, Ctrl+A to select all, middle-drag to pan, the wheel to zoom, and F to frame the mapping. Right-click inside the editor for scale/translate, rotation, coordinate-set selection, or loading a DDS/TGA/BMP background texture when the original cannot be found. Changes appear in the main document and save normally. Ctrl+Z/Ctrl+Y use document undo/redo; each UV drag is one undo step and the editor remains open when undoing a UV edit. NiMesh support currently requires one triangle-list submesh and contiguous UV/index regions; shared UV buffers are refused to avoid changing another object's mapping. UV writes preserve the other components of interleaved streams.
 
-For MicroVolts static PhysX triangle collision, **Show Collision** displays the stored collision as a cyan wireframe, with the selected source highlighted in orange. Click a collision edge in Object Select to select its matching source mesh. Enable **Show Hidden** if the source meshes are hidden, then use Vertex Select and the transform tools to edit them. Object transforms also work. Click **Rebuild Collision** on the render toolbar (or Render menu), select the game's `Bin/PhysXCooking.dll` on first use, and save the NIF. Each collider needs exactly one source NiMesh with the same name. Rebuilding uses PhysX 2.8.4 and validates every mesh with the game runtime before replacing any collision data. The entire rebuild is one undo step. Neither vertex edits nor saving automatically rebuild collision; the button is disabled for files without NiPhysXProp.
+For MicroVolts static PhysX triangle collision, **Show Collision** displays the stored collision as a cyan wireframe, with the selected source highlighted in orange. Click a collision edge in Object Select to select its matching source mesh or group. Select individual child meshes for vertex editing. Enable **Show Hidden** if the source meshes are hidden, then use Vertex Select and the transform tools to edit them. Object transforms also work. Click **Rebuild Collision** on the render toolbar (or Render menu), select the game's `Bin/PhysXCooking.dll` on first use, and save the NIF. Each collider needs a uniquely named NiMesh, or a named NiNode whose static NiMesh descendants are combined. Rebuilding uses PhysX 2.8.4 and validates every mesh with the game runtime before replacing any collision data. The entire rebuild is one undo step. Neither vertex edits nor saving automatically rebuild collision; the button is disabled for files without NiPhysXProp.
 
 This initial collision editor supports static triangle meshes with one state. Convex shapes, dynamic/parented actors, joints, cloth, mixed per-face materials, and shared collision mesh descriptions are rejected without changing the document. Other collision formats remain on their existing code paths. On Windows, keep `PhysxCooker.exe` beside NifSkope; qmake builds this small x86 helper with the .NET Framework compiler. The game's PhysX DLLs are not bundled or changed. The supplied player-collision sample passes cooking, runtime loading, coordinate/winding preservation, save/reload and undo tests; gameplay still needs testing in MicroVolts.
 
@@ -62,3 +87,110 @@ Refer to these other documents in your installation folder or at the links provi
  
 ## [LICENSE](https://github.com/niftools/nifskope/blob/develop/LICENSE.md)
 
+
+Face editing: select a mesh in Object mode, then choose Faces in the render
+toolbar. Click selects the nearest triangle; drag selects triangle centers
+through the mesh. Shift adds and Ctrl toggles selection. Move, Rotate and Scale
+transform the selected triangles' vertices; adjacent faces sharing those vertices
+follow the edit. Delete or Delete Selection removes selected triangles. Ctrl+A selects
+all faces. Face deletion and transforms support Undo/Redo. The current face editor
+supports static NiTriShape meshes and single-submesh NiMesh triangle lists with
+contiguous index regions. Shared geometry is copied automatically when entering edit mode on a duplicate. Vertex selection mode displays the mesh edges as an X-ray wireframe.
+
+Make Material Unique copies the selected mesh's material/property dependencies
+and gives its material a free numbered name (FOOTING_01 becomes FOOTING_02;
+FOOTING becomes FOOTING_01). Use it after duplicating a mesh to edit its material
+and texture settings independently. New Material assigns a default material to
+the selected mesh. Both controls are in the render toolbar and Render menu, and
+are also available under Spells > Mesh. Texture image files remain on disk; these
+actions copy the NIF's settings and references.
+
+Press Tab over the viewport to cycle Object > Vertex > Face > Object. Use
+**Shift+X** over the viewport (or Mesh Tools > X-Ray Selection) to show/select through geometry, or turn it off for
+visible geometry only. Delete (or Delete Selection) removes selected vertices
+and their connected faces in Vertex mode; remaining attributes and triangle
+indices are compacted together. These edits support Undo/Redo.
+
+The selection-mode button cycles Object / Vertex / Face; its arrow opens the
+mode list. The transform button cycles Select / Move / Rotate / Scale, with
+V/W/E/R shortcuts and an arrow menu. Both show the active icon. Mesh Tools groups
+Delete Selection, Snap Vertices, Mesh Center Pivot and X-Ray Selection; Materials
+groups material creation and uniqueness. UV Editor and Rebuild Collision remain
+separate icon buttons. Replace the placeholder PNGs in `res/icon/editor/` and
+rebuild to customize these icons.
+
+A swift RMB click (up to 250 ms with at most four pixels of pointer travel) opens
+the viewport context menu. Holding RMB, looking around, using a movement key, or
+adjusting fly speed suppresses it. Native context events are blocked so a menu
+cannot interrupt navigation or open twice.
+
+Materials > Material Editor opens a dock for the selected mesh. Choose an existing
+material and Assign, or use New + Assign to create and attach one immediately.
+Make Unique detaches shared materials before editing. Name, ambient/diffuse/
+specular/emissive colors, opacity and glossiness are editable; assignment also
+uses the source mesh's texture and alpha properties when available. Opacity
+rendering follows the mesh's alpha/blending settings. These changes are undoable.
+
+N opens relative numeric Move/Rotate/uniform Scale controls for objects or selected
+vertices/faces, in local or world space. Mesh Tools > World Axes also aligns the
+gizmo to world axes. Shift+H isolates the selected mesh/subtree; Alt+H restores
+other meshes without changing saved visibility. The UV editor and viewport now
+synchronize vertex/face selections for the active mesh.
+The material sidebar includes texture map slots with editable paths and Browse
+buttons. Apply Material Changes adds/replaces maps; clearing a path removes the
+map. Slots follow the file version (unsupported maps are disabled). Assign the
+chosen material first; map edits affect the selected mesh and copy shared texture
+descriptors/sources as needed. File browsing stores paths relative to the NIF.
+
+The UV editor's Texture dropdown lists the selected mesh's material maps. Choosing
+Base, Detail/lightmap or another map displays its texture and selects the UV
+channel assigned by that slot, including packed NiMesh texture flags. UV labels
+are one-based (UV 1, UV 2). The UV dropdown can preview another channel without
+changing the material assignment. Undo keeps the active texture and UV channel.
+
+Ctrl+I inverts the active mesh's selection in Vertex or Face mode. In the UV
+editor it inverts UV selection. Selection inversion does not edit mesh data.
+
+The UV editor stays owned by the main window and follows mesh selection in Object
+mode. Vertex/face selections synchronize in both directions, with exact viewport
+face highlights. Selecting non-mesh nodes keeps the current UV window open;
+geometry detachment and undo no longer close it.
+
+Cube Unwrap in the UV editor projects selected complete faces (or the entire mesh
+when no faces are selected) into six padded atlas regions on the active UV channel.
+Seams split vertices and copy their other attributes/UV channels. Supported static
+NiMesh triangle lists and NiTriShape meshes retain their shape and support undo.
+
+All UV editor entry points (toolbar and Texture > Edit UV) share the same owned
+window and viewport-selection synchronization. Texture/UV controls and Cube
+Unwrap sit in a separate toolbar above the OpenGL canvas. Cube Unwrap is also
+available in the UV editor context menu.
+
+Render > Rooms opens the existing-room inspector. Select and move a static mesh
+normally; its room membership is unchanged until Assign Selected Mesh to Room is
+clicked. Choose Suggested Room selects a destination only when one room fully
+contains the mesh. The sidebar also offers room/portal boundary overlays and a
+read-only structural link check. Reassignment preserves world transforms and
+render properties and supports undo/redo. Ambiguous/shared ownership, external
+references, occluder tags, animation, incompatible inherited state and cross-group
+transfers are blocked with an explanation. See docs/room-workflow.md.
+
+Collision source groups are resolved through Children links, including material
+splits such as coc_sand:0 and coc_sand:2. Child names do not need consecutive
+suffixes. Source ancestry transforms and mirrored winding are preserved while
+merging into the existing collider; the scene hierarchy and materials are kept.
+The rebuild status names the active NIF and lists grouped source contributions.
+Each collision NIF remains independent; rebuild and save the file used by the
+game for the collision being tested. Already loaded game actors require reloading
+their collision; fully restarting the game avoids cached mesh-name reuse.
+
+Render > Rooms > Portal Openings edits existing openings. Choose a portal, select
+boundary vertices or planar faces in Vertex/Face mode, and click Preview Fit
+Rectangle to Selection. The selected portal is yellow; proposed outlines are
+magenta. Apply Portal Change commits the preview; Cancel Preview leaves the file
+unchanged. Move U/V and Scale U/V offer a separate numeric move/resize preview.
+Matching reverse portals update together by default, with opposite winding and
+correct local transforms. Missing/ambiguous reverse matches require review or an
+explicit one-way edit. Fitting keeps the original divider plane and reports any
+projection of a parallel selected face. Room bounds, portal links and flags stay
+unchanged. See docs/portal-workflow.md.

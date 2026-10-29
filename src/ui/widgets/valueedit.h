@@ -48,6 +48,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 class QAction;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 
 //! An editing widget for a NifValue
 class ValueEdit : public QWidget
@@ -164,8 +165,10 @@ protected slots:
 	void sltChanged();
 
 private:
-	QDoubleSpinBox * r, * g, * b, * a;
-	QLabel * al;
+	QLineEdit * hex;
+	Color4 original;
+	QString originalHex;
+	bool hasAlpha = false;
 	bool setting;
 };
 

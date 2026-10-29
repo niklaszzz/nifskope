@@ -40,7 +40,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QGLWidget> // Inherited
 #include <QGraphicsView>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QPersistentModelIndex>
+#include <QPointer>
+#include <memory>
 
 #include <math.h>
 
@@ -54,6 +57,7 @@ class GLGraphicsView;
 class QGLFormat;
 class QOpenGLContext;
 class QOpenGLFunctions;
+class QOpenGLFramebufferObject;
 class QTimer;
 
 
@@ -67,6 +71,9 @@ class GLView final : public QGLWidget
 	friend class GLViewGizmoTest;
 	friend class VertexEditorTest;
 	friend class PhysXCollisionTest;
+	friend class WorkspaceTest;
+	friend class ViewportResizeTest;
+	friend class LightingPreviewTest;
 
 private:
 	GLView( const QGLFormat & format, QWidget * parent, const QGLWidget * shareWidget = 0 );
@@ -153,7 +160,26 @@ public:
 	enum GizmoMode { GizmoSelect, GizmoMove, GizmoRotate, GizmoScale };
 	void setGizmoMode( GizmoMode mode );
 	void setEditSelectionMode( Scene::SelMode mode );
+	void setFaceSelectionMode();
+	void deleteSelectedFaces();
+	void deleteSelectedVertices();
+	void cycleSelectionMode();
+	void selectLinkedEditElements();
+	void setEditXRay(bool enabled) { if(editXRay==enabled)return;editXRay=enabled;vertexProjectionValid=false;emit editXRayChanged(enabled);update(); }
 	void setVertexSnap( bool enabled ) { vertexSnap=enabled; update(); }
+	void setMeshCenterPivot(bool enabled);
+	void setWorldAxes(bool enabled) { finishGizmo(true);worldAxes=enabled;gizmoVisible=false;update(); }
+	void setIsolateSelection(bool enabled);
+	void setRoomOverlay(bool enabled){showRoomOverlay=enabled;update();}
+	void setPortalPreview(const QVector<QPair<Vector3,Vector3>> & edges){portalPreview=edges;update();}
+	void setPortalHighlight(int id){highlightedPortal=id;update();}
+	bool applyNumericTransform(GizmoMode mode,const Vector3 & amount,bool worldSpace,QString * reason=nullptr);
+	void showNumericTransform();
+	void setUnshaded(bool enabled);
+	void setDetailBrightness(int percent);
+	void setReferenceModels(const QList<NifModel *> & models);
+	void setReferencesVisible(bool visible) { referencesVisible=visible;update(); }
+	void setReferenceOpacity(int percent) { referenceOpacity=qBound(0,percent,100)/100.f;update(); }
 
 	QColor clearColor() const;
 
@@ -182,6 +208,13 @@ public slots:
 	void updateSettings();
 
 signals:
+	void selectionModeCycled(int mode);
+	void gizmoModeChanged(int mode);
+	void viewportContextMenuRequested(const QPoint & point);
+	void currentBlockChanged(const QModelIndex & block);
+	void editSelectionChanged();
+	void editXRayChanged(bool enabled);
+	void isolationChanged(bool enabled);
 	void clicked( const QModelIndex & );
 	void paintUpdate();
 	void sceneTimeChanged( float t, float mn, float mx );
@@ -207,6 +240,7 @@ protected:
 	void glProjection( int x = -1, int y = -1 );
 
 	// QWidget Event Handlers
+	bool event(QEvent * event) override;
 
 	void dragEnterEvent( QDragEnterEvent * ) override final;
 	void dragLeaveEvent( QDragLeaveEvent * ) override final;
@@ -225,7 +259,15 @@ protected slots:
 	void saveImage();
 
 private:
+	struct ReferenceLayer;
+	QVector<std::shared_ptr<ReferenceLayer>> referenceLayers;
+	std::unique_ptr<QOpenGLFramebufferObject> referenceBuffer;
+	bool referencesVisible = true;
+	float referenceOpacity = .3f;
+	void clearReferences();
+	void drawReferences();
 	NifModel * model;
+	QVector<QMetaObject::Connection> activeModelConnections;
 	Scene * scene;
 
 	ViewState view;
@@ -237,6 +279,12 @@ private:
 	float time;
 	QTime lastTime;
 	QTimer * timer;
+	bool flyNavigating=false;
+	QElapsedTimer flyClickTimer;
+	QPoint flyPressPoint;
+	bool flyGestureUsed=false;
+	float flySpeedMultiplier=1.0f;
+	void stopFlyNavigation();
 
 	float Dist;
 	Vector3 Pos;
@@ -256,6 +304,15 @@ private:
 	float gizmoLength = 1;
 	float gizmoDragLength = 1;
 	Vector3 gizmoDragOrigin, gizmoDragAxes[3];
+	bool meshCenterPivot = false;
+	bool worldAxes=false;
+	int isolateRestoreBlock=-1;
+	bool showRoomOverlay=false;
+	int highlightedPortal=-1;
+	QVector<QPair<Vector3,Vector3>> portalPreview;
+	int selectionRestoreBlock=-1;
+	Vector3 gizmoLocalPivot;
+	bool meshPivot(const QModelIndex & block,Vector3 & pivot) const;
 	GLdouble gizmoDragModelview[16], gizmoDragProjection[16];
 	GLint gizmoDragViewport[4];
 	double gizmoAngle = 0, gizmoLastAngle = 0;
@@ -263,6 +320,9 @@ private:
 	bool gizmoPlaneAngle( const QPoint & point, double & angle ) const;
 	QPointF gizmoScreenOrigin, gizmoScreenAxes[3];
 	QVector<QPointF> gizmoRings[3];
+	QVector<QPointF> gizmoPlanes[3]; // IDs 3..5: YZ, XZ, XY
+	Vector3 gizmoPlaneStart;
+	bool gizmoPlanePoint(const QPoint & point,int normal,Vector3 & result) const;
 	QPointF gizmoDragDirection;
 	QPoint gizmoPress;
 	GLdouble gizmoModelview[16], gizmoProjection[16];
@@ -275,6 +335,13 @@ private:
 	void finishGizmo( bool cancel = false );
 	QPersistentModelIndex editMesh;
 	VertexEditData editData;
+	FaceEditData faceData;
+	bool faceSelection=false;
+	bool editXRay=true;
+	QVector<float> editDepth;
+	bool editPointVisible(const Vector3 & world) const;
+	bool projectEditPoint(const Vector3 & world,QPointF & screen,double & depth) const;
+	QSet<int> selectedFaces;
 	QSet<int> selectedVertices, vertexDragSelection;
 	QVector<Vector3> vertexDragPositions;
 	bool vertexGizmo = false;
@@ -289,6 +356,9 @@ private:
 	int snapTarget = -1;
 	Vector3 snapAnchor;
 	QVector<QPair<QPersistentModelIndex,QPointF>> lightMarkers;
+	QVector<QPair<Vector3,Vector3>> lightIndicatorLines(const QModelIndex & block, const Transform & world, float length) const;
+	double lightAttenuationRadius(const QModelIndex & block, double fraction) const;
+	QVector<QPair<Vector3,Vector3>> lightFalloffLines(const QModelIndex & block, const Transform & world, double fraction) const;
 	QVector<PhysXCollision::Mesh> physxMeshes;
 	bool physxDirty = true;
 	QModelIndex collisionAt(const QPoint & point) const;
@@ -353,6 +423,7 @@ protected slots:
 
 protected:
 	bool eventFilter( QObject * o, QEvent * e ) override final;
+	bool event(QEvent * event) override;
 	void dragEnterEvent( QDragEnterEvent * ) override final;
 	void dragLeaveEvent( QDragLeaveEvent * ) override final;
 	void dragMoveEvent( QDragMoveEvent * ) override final;
